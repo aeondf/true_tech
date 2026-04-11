@@ -22,9 +22,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 _log = logging.getLogger(__name__)
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.db.database import SessionLocal
+from app.db.database import get_session
 from app.db.models import RouterLog
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
 from app.services.cascade_router import CascadeRouter, get_cascade_router
@@ -96,27 +97,26 @@ async def _inject_rag(
 
 
 async def _log_route(
+    session: AsyncSession,
     user_id: str,
     message: str,
     route: RouteResult,
     latency_ms: int,
 ) -> None:
-    """Fire-and-forget: логируем решение роутера в отдельной сессии."""
     try:
-        async with SessionLocal() as session:
-            log = RouterLog(
-                id=str(uuid.uuid4()),
-                user_id=user_id,
-                message_preview=message[:512],
-                task_type=route.task_type,
-                model_id=route.model_id,
-                confidence=route.confidence,
-                latency_ms=latency_ms,
-            )
-            session.add(log)
-            await session.commit()
-    except Exception as e:
-        _log.debug("Route log skipped (DB unavailable): %s", e)
+        log = RouterLog(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            message_preview=message[:512],
+            task_type=route.task_type,
+            model_id=route.model_id,
+            confidence=route.confidence,
+            latency_ms=latency_ms,
+        )
+        session.add(log)
+        await session.commit()
+    except Exception:
+        await session.rollback()
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -131,6 +131,7 @@ async def chat_completions(
     embedder: EmbeddingService = Depends(get_embedding_service),
     compressor: ContextCompressor = Depends(get_context_compressor),
     cascade: CascadeRouter = Depends(get_cascade_router),
+    session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ):
     try:
@@ -183,22 +184,23 @@ async def chat_completions(
     try:
         request = await _inject_memories(request, retriever, user_id)
     except Exception as e:
-        _log.warning("Memory injection failed, skipping: %s", e)
+        import logging
+        logging.getLogger(__name__).warning("Memory injection failed, skipping: %s", e)
 
     # 5. RAG injection for file queries (silently skip if embeddings unavailable)
     if route.task_type == "file_qa":
         try:
             request = await _inject_rag(request, chunk_store, embedder, user_id)
         except Exception as e:
-            _log.warning("RAG injection failed, skipping: %s", e)
+            import logging
+            logging.getLogger(__name__).warning("RAG injection failed, skipping: %s", e)
 
-    # 6. Log route decision (fire & forget, собственная сессия)
+    # 6. Log route decision (fire & forget)
     asyncio.create_task(
-        _log_route(user_id, message_text, route, latency_ms)
+        _log_route(session, user_id, message_text, route, latency_ms)
     )
 
     # 7. Forward to MWS
-    _log.info("→ MWS model=%s stream=%s msgs=%d", request.model, request.stream, len(request.messages))
     try:
         if request.stream:
             return StreamingResponse(
