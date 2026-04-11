@@ -23,6 +23,7 @@ from app.config import Settings, get_settings
 from app.db.database import get_session
 from app.db.models import RouterLog
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
+from app.services.cascade_router import CascadeRouter, get_cascade_router
 from app.services.chunk_store import ChunkStore, get_chunk_store
 from app.services.context_compressor import ContextCompressor, get_context_compressor
 from app.services.embedding_service import EmbeddingService, get_embedding_service
@@ -124,6 +125,7 @@ async def chat_completions(
     chunk_store: ChunkStore = Depends(get_chunk_store),
     embedder: EmbeddingService = Depends(get_embedding_service),
     compressor: ContextCompressor = Depends(get_context_compressor),
+    cascade: CascadeRouter = Depends(get_cascade_router),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ):
@@ -145,19 +147,23 @@ async def chat_completions(
     compressed_messages = await compressor.compress_if_needed(list(request.messages))
     request = request.model_copy(update={"messages": compressed_messages})
 
-    # 3. Memory injection
+    # 3. Cascade tool execution (web_search + web_parse параллельно если нужно)
+    if route.tools:
+        request = await cascade.run(request, route.tools, message_text)
+
+    # 4. Memory injection
     request = await _inject_memories(request, retriever, user_id)
 
-    # 4. RAG injection for file queries
+    # 5. RAG injection for file queries
     if route.task_type == "file_qa":
         request = await _inject_rag(request, chunk_store, embedder, user_id)
 
-    # 5. Log route decision (fire & forget)
+    # 6. Log route decision (fire & forget)
     asyncio.create_task(
         _log_route(session, user_id, message_text, route, latency_ms)
     )
 
-    # 6. Forward to MWS
+    # 7. Forward to MWS
     if request.stream:
         return StreamingResponse(
             mws.stream_chat(request),
