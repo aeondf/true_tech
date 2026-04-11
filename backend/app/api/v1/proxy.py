@@ -24,6 +24,7 @@ from app.db.database import get_session
 from app.db.models import RouterLog
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
 from app.services.chunk_store import ChunkStore, get_chunk_store
+from app.services.context_compressor import ContextCompressor, get_context_compressor
 from app.services.embedding_service import EmbeddingService, get_embedding_service
 from app.services.memory_retriever import MemoryRetriever, get_memory_retriever
 from app.services.mws_client import MWSClient, get_mws_client
@@ -122,6 +123,7 @@ async def chat_completions(
     retriever: MemoryRetriever = Depends(get_memory_retriever),
     chunk_store: ChunkStore = Depends(get_chunk_store),
     embedder: EmbeddingService = Depends(get_embedding_service),
+    compressor: ContextCompressor = Depends(get_context_compressor),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ):
@@ -139,19 +141,23 @@ async def chat_completions(
     latency_ms = int((time.monotonic() - t0) * 1000)
     request = request.model_copy(update={"model": route.model_id})
 
-    # 2. Memory injection
+    # 2. Compress context if history is too long
+    compressed_messages = await compressor.compress_if_needed(list(request.messages))
+    request = request.model_copy(update={"messages": compressed_messages})
+
+    # 3. Memory injection
     request = await _inject_memories(request, retriever, user_id)
 
-    # 3. RAG injection for file queries
+    # 4. RAG injection for file queries
     if route.task_type == "file_qa":
         request = await _inject_rag(request, chunk_store, embedder, user_id)
 
-    # 4. Log route decision (fire & forget)
+    # 5. Log route decision (fire & forget)
     asyncio.create_task(
         _log_route(session, user_id, message_text, route, latency_ms)
     )
 
-    # 5. Forward to MWS
+    # 6. Forward to MWS
     if request.stream:
         return StreamingResponse(
             mws.stream_chat(request),
