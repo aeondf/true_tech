@@ -68,6 +68,15 @@ services:
       - ollama
     restart: unless-stopped
 
+  # ─── Frontend (MTS AI Hub UI) ───────────────────────────────────
+  frontend:
+    build: ../frontend
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   # ─── OpenWebUI ──────────────────────────────────────────────────
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
