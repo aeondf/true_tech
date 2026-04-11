@@ -37,11 +37,23 @@ interface AppStore {
   lastRouterDecision: { taskType: string; modelId: string; confidence: number } | null
   setRouterDecision: (d: AppStore['lastRouterDecision']) => void
 
+  // Settings
+  language: 'ru' | 'en'
+  fontSize: 'sm' | 'md' | 'lg'
+  sendOnEnter: boolean
+  showAvatars: boolean
+  setLanguage: (v: 'ru' | 'en') => void
+  setFontSize: (v: 'sm' | 'md' | 'lg') => void
+  setSendOnEnter: (v: boolean) => void
+  setShowAvatars: (v: boolean) => void
+
   // UI
   sidebarOpen: boolean
   commandPaletteOpen: boolean
+  settingsOpen: boolean
   setSidebarOpen: (v: boolean) => void
   setCommandPaletteOpen: (v: boolean) => void
+  setSettingsOpen: (v: boolean) => void
 }
 
 export const useStore = create<AppStore>()(
@@ -92,10 +104,21 @@ export const useStore = create<AppStore>()(
       lastRouterDecision: null,
       setRouterDecision: (d) => set({ lastRouterDecision: d }),
 
+      language: 'ru',
+      fontSize: 'md',
+      sendOnEnter: true,
+      showAvatars: true,
+      setLanguage: (v) => set({ language: v }),
+      setFontSize: (v) => set({ fontSize: v }),
+      setSendOnEnter: (v) => set({ sendOnEnter: v }),
+      setShowAvatars: (v) => set({ showAvatars: v }),
+
       sidebarOpen: true,
       commandPaletteOpen: false,
+      settingsOpen: false,
       setSidebarOpen: (v) => set({ sidebarOpen: v }),
       setCommandPaletteOpen: (v) => set({ commandPaletteOpen: v }),
+      setSettingsOpen: (v) => set({ settingsOpen: v }),
     }),
     {
       name: 'mts-ai-hub',
@@ -103,6 +126,8 @@ export const useStore = create<AppStore>()(
         userId: s.userId, userName: s.userName,
         theme: s.theme, chats: s.chats,
         selectedModelId: s.selectedModelId, autoRoute: s.autoRoute,
+        language: s.language, fontSize: s.fontSize,
+        sendOnEnter: s.sendOnEnter, showAvatars: s.showAvatars,
       }),
     }
   )

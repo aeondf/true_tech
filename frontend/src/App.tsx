@@ -5,14 +5,19 @@ import { Sidebar } from './components/layout/Sidebar'
 import { Header } from './components/layout/Header'
 import { ChatWindow } from './components/chat/ChatWindow'
 import { CommandPalette } from './components/modals/CommandPalette'
+import { SettingsPage } from './components/modals/SettingsPage'
 
 export default function App() {
-  const { theme, userName } = useStore()
+  const { theme, userName, fontSize } = useStore()
 
-  // Apply theme class to html
   useEffect(() => {
     document.documentElement.className = theme
   }, [theme])
+
+  useEffect(() => {
+    document.documentElement.style.fontSize =
+      fontSize === 'sm' ? '13px' : fontSize === 'lg' ? '17px' : '15px'
+  }, [fontSize])
 
   if (!userName) return <LoginScreen />
 
@@ -24,6 +29,7 @@ export default function App() {
         <ChatWindow />
       </div>
       <CommandPalette />
+      <SettingsPage />
     </div>
   )
 }

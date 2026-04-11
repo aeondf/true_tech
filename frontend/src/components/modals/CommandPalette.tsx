@@ -12,11 +12,12 @@ interface Command {
 
 export function CommandPalette() {
   const [query, setQuery] = useState('')
-  const { commandPaletteOpen, setCommandPaletteOpen, createChat, toggleTheme, theme, setModel } = useStore()
+  const { commandPaletteOpen, setCommandPaletteOpen, createChat, toggleTheme, theme, setModel, setSettingsOpen } = useStore()
   const inputRef = useRef<HTMLInputElement>(null)
 
   const COMMANDS: Command[] = [
     { id: 'new-chat',    label: 'Новый чат',           icon: '💬', shortcut: '⌘N', action: () => { createChat(); setCommandPaletteOpen(false) } },
+    { id: 'settings',    label: 'Настройки',           icon: '⚙️',  shortcut: '⌘,', action: () => { setSettingsOpen(true); setCommandPaletteOpen(false) } },
     { id: 'theme',       label: `Тема: ${theme === 'dark' ? 'светлая' : 'тёмная'}`, icon: theme === 'dark' ? '☀️' : '🌙', shortcut: '⌘T', action: () => { toggleTheme(); setCommandPaletteOpen(false) } },
     { id: 'auto-model',  label: 'Модель: Авто',        icon: '🤖', action: () => { setModel('auto'); setCommandPaletteOpen(false) } },
     { id: 'gpt-model',   label: 'Модель: GPT Alpha',   icon: '💬', action: () => { setModel('mws-gpt-alpha'); setCommandPaletteOpen(false) } },

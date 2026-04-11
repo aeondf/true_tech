@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import { useStore } from '../../store'
 
 export function Header() {
-  const { theme, toggleTheme, setSidebarOpen, sidebarOpen, autoRoute, lastRouterDecision, setCommandPaletteOpen } = useStore()
+  const { theme, toggleTheme, setSidebarOpen, sidebarOpen, autoRoute, lastRouterDecision, setCommandPaletteOpen, setSettingsOpen } = useStore()
 
   return (
     <header style={{
@@ -61,6 +61,14 @@ export function Header() {
       >
         {theme === 'dark' ? '☀️' : '🌙'}
       </motion.button>
+
+      {/* Settings */}
+      <motion.button
+        whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+        onClick={() => setSettingsOpen(true)}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, padding: 4 }}
+        title="Настройки"
+      >⚙️</motion.button>
     </header>
   )
 }
