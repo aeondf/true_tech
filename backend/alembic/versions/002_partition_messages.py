@@ -18,14 +18,16 @@ def upgrade() -> None:
 
     # 2. Создаём новую партиционированную таблицу
     # HASH-партиционирование по conversation_id — равномерное распределение
+    # PRIMARY KEY должен включать ключ партиции (требование PostgreSQL)
     op.execute("""
         CREATE TABLE messages (
-            id              VARCHAR PRIMARY KEY,
-            conversation_id VARCHAR NOT NULL REFERENCES conversations(id),
+            id              VARCHAR NOT NULL,
+            conversation_id VARCHAR NOT NULL,
             role            VARCHAR(16) NOT NULL,
             content         TEXT NOT NULL,
             token_count     INTEGER,
-            created_at      TIMESTAMP DEFAULT now()
+            created_at      TIMESTAMP DEFAULT now(),
+            PRIMARY KEY (id, conversation_id)
         ) PARTITION BY HASH (conversation_id)
     """)
 

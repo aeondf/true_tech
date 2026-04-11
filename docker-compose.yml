@@ -7,6 +7,8 @@ services:
     ports:
       - "8000:8000"
     env_file: ./backend/.env
+    environment:
+      ROUTER_GGUF_PATH: /models/qwen2.5-1.5b-instruct-fp16.gguf
     depends_on:
       postgres:
         condition: service_healthy
@@ -14,6 +16,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - C:/Users/PC/Downloads:/models:ro
     restart: unless-stopped
 
   # ─── Frontend (React + nginx) ───────────────────────────────────
@@ -33,7 +36,7 @@ services:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -53,41 +56,15 @@ services:
       timeout: 3s
       retries: 5
 
-  # ─── Local LLM router ───────────────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    entrypoint: >
-      sh -c "ollama serve & sleep 5 && ollama pull qwen2.5:3b && wait"
-
-  # ─── Media service (ASR + TTS + VLM + Image Gen) ────────────────
+  # ─── Media service (ASR + TTS) ──────────────────────────────────
   media-service:
     build: ./media-service
     ports:
       - "8010:8010"
     environment:
-      OLLAMA_URL: http://ollama:11434
       TTS_VOICE: ru-RU-SvetlanaNeural
       WHISPER_MODEL: base
-    depends_on:
-      - ollama
-    restart: unless-stopped
-
-  # ─── OpenWebUI (альтернативный интерфейс) ───────────────────────
-  openwebui:
-    image: ghcr.io/open-webui/open-webui:main
-    ports:
-      - "3000:8080"
-    environment:
-      OPENAI_API_BASE_URL: http://backend:8000/v1
-      OPENAI_API_KEY: dummy
-    depends_on:
-      - backend
     restart: unless-stopped
 
 volumes:
   pgdata:
-  ollama_data:

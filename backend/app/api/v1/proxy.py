@@ -15,6 +15,7 @@ import asyncio
 import time
 import uuid
 
+import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,7 +142,10 @@ async def chat_completions(
         attachments=body.get("attachments", []),
     )
     latency_ms = int((time.monotonic() - t0) * 1000)
-    request = request.model_copy(update={"model": route.model_id})
+    # Если клиент явно указал модель (не "auto") — используем её, иначе подставляем из роутера
+    explicit_model = request.model not in ("auto", "", None)
+    if not explicit_model:
+        request = request.model_copy(update={"model": route.model_id})
 
     # 2. Compress context if history is too long
     compressed_messages = await compressor.compress_if_needed(list(request.messages))
@@ -151,12 +155,20 @@ async def chat_completions(
     if route.tools:
         request = await cascade.run(request, route.tools, message_text)
 
-    # 4. Memory injection
-    request = await _inject_memories(request, retriever, user_id)
+    # 4. Memory injection (silently skip if embeddings unavailable)
+    try:
+        request = await _inject_memories(request, retriever, user_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Memory injection failed, skipping: %s", e)
 
-    # 5. RAG injection for file queries
+    # 5. RAG injection for file queries (silently skip if embeddings unavailable)
     if route.task_type == "file_qa":
-        request = await _inject_rag(request, chunk_store, embedder, user_id)
+        try:
+            request = await _inject_rag(request, chunk_store, embedder, user_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("RAG injection failed, skipping: %s", e)
 
     # 6. Log route decision (fire & forget)
     asyncio.create_task(
@@ -164,15 +176,44 @@ async def chat_completions(
     )
 
     # 7. Forward to MWS
-    if request.stream:
-        return StreamingResponse(
-            mws.stream_chat(request),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+    try:
+        if request.stream:
+            return StreamingResponse(
+                mws.stream_chat(request),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
-    response = await mws.chat(request)
-    return JSONResponse(content=response)
+        response = await mws.chat(request)
+        return JSONResponse(content=response)
+
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        try:
+            detail = e.response.json()
+        except Exception:
+            detail = e.response.text
+        return JSONResponse(
+            status_code=status,
+            content={
+                "error": {
+                    "code": status,
+                    "message": f"MWS API error for model '{request.model}'",
+                    "detail": detail,
+                }
+            },
+        )
+    except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "code": 503,
+                    "message": "MWS API недоступен (timeout/connection error)",
+                    "detail": str(e),
+                }
+            },
+        )
 
 
 @router.post("/completions")
