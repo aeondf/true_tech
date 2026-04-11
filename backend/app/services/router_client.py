@@ -45,7 +45,8 @@ CODE_KEYWORDS = re.compile(
 )
 URL_PATTERN = re.compile(r"https?://\S+")
 RESEARCH_KEYWORDS = re.compile(
-    r"(исследу|глубокий анализ|подробно разбери|deep research|расскажи подробно)",
+    r"(исследу|глубокий анализ|подробно разбери|deep research|расскажи подробно"
+    r"|подробный анализ|детальный анализ|разбери подробно|изучи|проанализируй)",
     re.IGNORECASE,
 )
 
