@@ -68,22 +68,23 @@ export function ChatWindow() {
       .filter(m => !m.isStreaming)
       .map(m => ({ role: m.role, content: m.content }))
 
-    const model = autoRoute ? 'mws-gpt-alpha' : selectedModelId
+    const model = autoRoute ? 'auto' : selectedModelId
 
     try {
       let full = ''
+      let resolvedModel = model
       for await (const token of api.streamChat(messages, model, userId)) {
-        full += token
-        updateMessage(cid, assistantId, { content: full })
+        if (typeof token === 'object' && 'model' in token) {
+          resolvedModel = (token as { model: string }).model
+        } else {
+          full += token as string
+          updateMessage(cid, assistantId, { content: full })
+        }
       }
-      updateMessage(cid, assistantId, { isStreaming: false, modelId: model })
-
-      // Mock router decision for auto mode
-      if (autoRoute) {
-        setRouterDecision({ taskType: 'text', modelId: model, confidence: 0.92 })
-      }
-    } catch {
-      updateMessage(cid, assistantId, { content: '❌ Ошибка подключения к API', isStreaming: false })
+      updateMessage(cid, assistantId, { isStreaming: false, modelId: resolvedModel })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      updateMessage(cid, assistantId, { content: `❌ Ошибка: ${msg}`, isStreaming: false })
     } finally {
       setIsLoading(false)
     }
@@ -113,7 +114,7 @@ export function ChatWindow() {
   }
 
   if (!activeChatId || !chat) {
-    return <EmptyState />
+    return <EmptyState onSend={handleSend} />
   }
 
   return (
@@ -131,7 +132,7 @@ export function ChatWindow() {
   )
 }
 
-function EmptyState() {
+function EmptyState({ onSend }: { onSend: (text: string) => void }) {
   const { createChat } = useStore()
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24 }}>
@@ -160,7 +161,7 @@ function EmptyState() {
           <motion.button
             key={s.label}
             whileHover={{ scale: 1.02, borderColor: 'var(--mts-red)' }}
-            onClick={() => { createChat() }}
+            onClick={() => onSend(s.prompt)}
             className="glass"
             style={{ padding: '12px 10px', cursor: 'pointer', background: 'var(--glass-bg)', border: '1px solid var(--glass-brd)', borderRadius: 10, textAlign: 'left', transition: 'all 0.2s' }}
           >
@@ -175,10 +176,10 @@ function EmptyState() {
 }
 
 const SUGGESTIONS = [
-  { icon: '💻', label: 'Напиши код', desc: 'Функция, класс, алгоритм' },
-  { icon: '🔬', label: 'Исследуй тему', desc: 'Deep Research с источниками' },
-  { icon: '📊', label: 'Создай презентацию', desc: 'PPTX по вашей теме' },
-  { icon: '📄', label: 'Анализ файла', desc: 'Загрузи PDF / DOCX' },
-  { icon: '🔍', label: 'Найди в сети', desc: 'Актуальная информация' },
-  { icon: '🎤', label: 'Голосовой запрос', desc: 'Говорите — отвечу' },
+  { icon: '💻', label: 'Напиши код', desc: 'Функция, класс, алгоритм', prompt: 'Напиши пример кода на Python: ' },
+  { icon: '🔬', label: 'Исследуй тему', desc: 'Deep Research с источниками', prompt: 'Исследуй подробно тему: ' },
+  { icon: '📊', label: 'Создай презентацию', desc: 'PPTX по вашей теме', prompt: 'Создай структуру презентации на тему: ' },
+  { icon: '📄', label: 'Анализ файла', desc: 'Загрузи PDF / DOCX', prompt: 'Проанализируй этот файл и выдели ключевые моменты' },
+  { icon: '🔍', label: 'Найди в сети', desc: 'Актуальная информация', prompt: 'Найди актуальную информацию по теме: ' },
+  { icon: '🎤', label: 'Голосовой запрос', desc: 'Говорите — отвечу', prompt: 'Привет! Как ты можешь мне помочь?' },
 ]

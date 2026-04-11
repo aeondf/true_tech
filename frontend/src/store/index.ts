@@ -3,10 +3,12 @@ import { persist } from 'zustand/middleware'
 import type { Chat, Message, Theme, Model } from '../types'
 
 const MODELS: Model[] = [
-  { id: 'mws-gpt-alpha',     name: 'GPT Alpha',  description: 'Текст, вопросы',        type: 'text',          icon: '💬' },
-  { id: 'kodify-2.0',        name: 'Kodify',     description: 'Код и алгоритмы',       type: 'code',          icon: '💻' },
-  { id: 'cotype-preview-32k',name: 'Cotype 32K', description: 'Длинный контекст',      type: 'deep_research', icon: '🔬' },
-  { id: 'auto',              name: 'Авто',       description: 'Роутер выбирает мо��ель', type: 'text',          icon: '🤖' },
+  { id: 'auto',                          name: 'Авто',        description: 'Роутер выбирает модель', type: 'text',          icon: '🤖' },
+  { id: 'mws-gpt-alpha',                 name: 'GPT Alpha',   description: 'Текст, вопросы',         type: 'text',          icon: '💬' },
+  { id: 'qwen3-coder-480b-a35b',         name: 'Coder 480B',  description: 'Код и алгоритмы',        type: 'code',          icon: '💻' },
+  { id: 'qwen2.5-72b-instruct',          name: 'Qwen 72B',    description: 'Длинный контекст',       type: 'deep_research', icon: '🔬' },
+  { id: 'QwQ-32B',                       name: 'QwQ 32B',     description: 'Рассуждения, анализ',    type: 'deep_research', icon: '🧠' },
+  { id: 'deepseek-r1-distill-qwen-32b',  name: 'DeepSeek R1', description: 'Логика, математика',     type: 'code',          icon: '🔭' },
 ]
 
 interface AppStore {

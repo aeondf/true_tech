@@ -12,16 +12,19 @@ Pipeline per request:
   6. Log router decision asynchronously
 """
 import asyncio
+import logging
 import time
+import traceback
 import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse, JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+
+_log = logging.getLogger(__name__)
 
 from app.config import Settings, get_settings
-from app.db.database import get_session
+from app.db.database import SessionLocal
 from app.db.models import RouterLog
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
 from app.services.cascade_router import CascadeRouter, get_cascade_router
@@ -93,26 +96,27 @@ async def _inject_rag(
 
 
 async def _log_route(
-    session: AsyncSession,
     user_id: str,
     message: str,
     route: RouteResult,
     latency_ms: int,
 ) -> None:
+    """Fire-and-forget: логируем решение роутера в отдельной сессии."""
     try:
-        log = RouterLog(
-            id=str(uuid.uuid4()),
-            user_id=user_id,
-            message_preview=message[:512],
-            task_type=route.task_type,
-            model_id=route.model_id,
-            confidence=route.confidence,
-            latency_ms=latency_ms,
-        )
-        session.add(log)
-        await session.commit()
-    except Exception:
-        await session.rollback()
+        async with SessionLocal() as session:
+            log = RouterLog(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                message_preview=message[:512],
+                task_type=route.task_type,
+                model_id=route.model_id,
+                confidence=route.confidence,
+                latency_ms=latency_ms,
+            )
+            session.add(log)
+            await session.commit()
+    except Exception as e:
+        _log.debug("Route log skipped (DB unavailable): %s", e)
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -127,20 +131,34 @@ async def chat_completions(
     embedder: EmbeddingService = Depends(get_embedding_service),
     compressor: ContextCompressor = Depends(get_context_compressor),
     cascade: CascadeRouter = Depends(get_cascade_router),
-    session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ):
-    body = await raw.json()
-    request = ChatCompletionRequest(**body)
+    try:
+        body = await raw.json()
+    except Exception as e:
+        _log.error("Failed to parse request body: %s", e)
+        return JSONResponse(status_code=400, content={"error": {"code": 400, "message": "Bad request", "detail": str(e)}})
+
+    try:
+        request = ChatCompletionRequest(**body)
+    except Exception as e:
+        _log.error("Request validation error: %s\nbody=%r", e, body)
+        return JSONResponse(status_code=422, content={"error": {"code": 422, "message": "Validation error", "detail": str(e)}})
+
     user_id: str = body.get("user", "anonymous")
     message_text = _last_user_text(request)
 
     # 1. Route
     t0 = time.monotonic()
-    route = await router_client.route(
-        message=message_text,
-        attachments=body.get("attachments", []),
-    )
+    try:
+        route = await router_client.route(
+            message=message_text,
+            attachments=body.get("attachments", []),
+        )
+    except Exception as e:
+        _log.error("Router error for message=%r: %s\n%s", message_text, e, traceback.format_exc())
+        return JSONResponse(status_code=500, content={"error": {"code": 500, "message": "Router error", "detail": str(e), "type": type(e).__name__}})
+
     latency_ms = int((time.monotonic() - t0) * 1000)
     # Если клиент явно указал модель (не "auto") — используем её, иначе подставляем из роутера
     explicit_model = request.model not in ("auto", "", None)
@@ -148,34 +166,39 @@ async def chat_completions(
         request = request.model_copy(update={"model": route.model_id})
 
     # 2. Compress context if history is too long
-    compressed_messages = await compressor.compress_if_needed(list(request.messages))
-    request = request.model_copy(update={"messages": compressed_messages})
+    try:
+        compressed_messages = await compressor.compress_if_needed(list(request.messages))
+        request = request.model_copy(update={"messages": compressed_messages})
+    except Exception as e:
+        _log.error("Context compression error: %s\n%s", e, traceback.format_exc())
 
     # 3. Cascade tool execution (web_search + web_parse параллельно если нужно)
     if route.tools:
-        request = await cascade.run(request, route.tools, message_text)
+        try:
+            request = await cascade.run(request, route.tools, message_text)
+        except Exception as e:
+            _log.error("Cascade router error for tools=%s: %s\n%s", route.tools, e, traceback.format_exc())
 
     # 4. Memory injection (silently skip if embeddings unavailable)
     try:
         request = await _inject_memories(request, retriever, user_id)
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning("Memory injection failed, skipping: %s", e)
+        _log.warning("Memory injection failed, skipping: %s", e)
 
     # 5. RAG injection for file queries (silently skip if embeddings unavailable)
     if route.task_type == "file_qa":
         try:
             request = await _inject_rag(request, chunk_store, embedder, user_id)
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("RAG injection failed, skipping: %s", e)
+            _log.warning("RAG injection failed, skipping: %s", e)
 
-    # 6. Log route decision (fire & forget)
+    # 6. Log route decision (fire & forget, собственная сессия)
     asyncio.create_task(
-        _log_route(session, user_id, message_text, route, latency_ms)
+        _log_route(user_id, message_text, route, latency_ms)
     )
 
     # 7. Forward to MWS
+    _log.info("→ MWS model=%s stream=%s msgs=%d", request.model, request.stream, len(request.messages))
     try:
         if request.stream:
             return StreamingResponse(
@@ -211,6 +234,24 @@ async def chat_completions(
                     "code": 503,
                     "message": "MWS API недоступен (timeout/connection error)",
                     "detail": str(e),
+                }
+            },
+        )
+    except Exception as e:
+        _log.error(
+            "Unhandled exception in chat_completions (model=%s): %s\n%s",
+            getattr(request, "model", "?"),
+            e,
+            traceback.format_exc(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": 500,
+                    "message": "Internal server error",
+                    "detail": str(e),
+                    "type": type(e).__name__,
                 }
             },
         )

@@ -49,11 +49,15 @@ class MemoryRetriever:
             pass
 
         # 2. Embed + pgvector search
-        vector = await self.embedder.embed(query)
-        memories = await self.repo.search(
-            user_id=user_id, query_vector=vector, top_k=self.top_k
-        )
-        texts = [m["text"] for m in memories]
+        try:
+            vector = await self.embedder.embed(query)
+            memories = await self.repo.search(
+                user_id=user_id, query_vector=vector, top_k=self.top_k
+            )
+            texts = [m["text"] for m in memories]
+        except Exception as e:
+            logger.warning("Memory search failed (embed/DB error): %s", e)
+            return []
 
         # 3. Cache result
         try:

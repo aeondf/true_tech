@@ -1,6 +1,18 @@
 import { motion } from 'framer-motion'
 import type { Message } from '../../types'
 
+const MODEL_NAMES: Record<string, string> = {
+  'mws-gpt-alpha':                'GPT Alpha',
+  'qwen3-coder-480b-a35b':        'Coder 480B',
+  'qwen2.5-72b-instruct':         'Qwen 72B',
+  'QwQ-32B':                      'QwQ 32B',
+  'deepseek-r1-distill-qwen-32b': 'DeepSeek R1',
+  'cotype-pro-vl-32b':            'VLM',
+  'qwen-image':                   'Image Gen',
+  'whisper-turbo-local':          'Whisper',
+  'auto':                         'Авто',
+}
+
 // Minimal markdown renderer
 function renderMarkdown(text: string) {
   return text
@@ -54,7 +66,7 @@ export function MessageBubble({ message }: { message: Message }) {
         {/* Model badge */}
         {!isUser && message.modelId && (
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4, fontWeight: 500 }}>
-            {message.taskType && `${taskIcon(message.taskType)} `}{message.modelId}
+            {message.taskType && `${taskIcon(message.taskType)} `}{MODEL_NAMES[message.modelId] ?? message.modelId}
           </div>
         )}
 

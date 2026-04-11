@@ -8,6 +8,11 @@ services:
       - "8000:8000"
     env_file: ./backend/.env
     environment:
+      DATABASE_URL: postgresql+asyncpg://user:pass@postgres:5432/mirea
+      REDIS_URL: redis://redis:6379/0
+      ASR_URL: http://media-service:8010/asr
+      IMAGE_GEN_URL: http://media-service:8010/image
+      VLM_URL: http://media-service:8010/vlm
       ROUTER_GGUF_PATH: /models/qwen2.5-1.5b-instruct-fp16.gguf
     depends_on:
       postgres:

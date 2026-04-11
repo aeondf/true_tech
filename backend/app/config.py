@@ -14,10 +14,10 @@ class Settings(BaseSettings):
     MODEL_EMBED: str = "bge-m3"
 
     # PostgreSQL + pgvector
-    DATABASE_URL: str = "postgresql+asyncpg://user:pass@localhost:5432/mirea"
+    DATABASE_URL: str = "postgresql+asyncpg://user:pass@postgres:5432/mirea"
 
     # Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str = "redis://redis:6379/0"
 
     # Router (Ollama fallback)
     ROUTER_URL: str = "http://localhost:11434"
@@ -26,15 +26,15 @@ class Settings(BaseSettings):
     # Router local GGUF (takes priority over Ollama when set)
     ROUTER_GGUF_PATH: str = r"C:\Users\PC\Downloads\qwen2.5-1.5b-instruct-fp16.gguf"
 
-    # ASR (faster-whisper)
-    ASR_URL: str = "http://localhost:8001"
+    # ASR (faster-whisper) — media-service on port 8010
+    ASR_URL: str = "http://media-service:8010/asr"
 
     # TTS
     TTS_VOICE: str = "ru-RU-SvetlanaNeural"
 
-    # Image generation / VLM
-    IMAGE_GEN_URL: str = "http://localhost:8002"
-    VLM_URL: str = "http://localhost:8003"
+    # Image generation / VLM — media-service on port 8010
+    IMAGE_GEN_URL: str = "http://media-service:8010/image"
+    VLM_URL: str = "http://media-service:8010/vlm"
 
     # Rate limiting
     RATE_LIMIT_PER_MINUTE: int = 60

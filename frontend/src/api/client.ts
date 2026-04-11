@@ -1,14 +1,21 @@
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8004'
 
 export const api = {
   // ── Chat ─────────────────────────────────────────────
-  async *streamChat(messages: {role: string; content: string}[], model = 'mws-gpt-alpha', userId: string) {
+  async *streamChat(messages: {role: string; content: string}[], model = 'auto', userId: string) {
     const res = await fetch(`${BASE}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, messages, stream: true, user: userId }),
     })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`
+      try {
+        const body = await res.json()
+        detail = body?.error?.message || body?.detail || detail
+      } catch {}
+      throw new Error(detail)
+    }
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -25,9 +32,12 @@ export const api = {
         if (data === '[DONE]') return
         try {
           const parsed = JSON.parse(data)
+          if (parsed?.error) throw new Error(parsed.error.message || parsed.error.detail || 'API error')
           const token = parsed?.choices?.[0]?.delta?.content
           if (token) yield token as string
-        } catch {}
+        } catch (e) {
+          if (e instanceof Error && e.message !== 'Unexpected end of JSON input') throw e
+        }
       }
     }
   },
