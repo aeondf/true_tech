@@ -55,6 +55,19 @@ services:
     entrypoint: >
       sh -c "ollama serve & sleep 5 && ollama pull qwen2.5:3b && wait"
 
+  # ─── Media service (ASR + TTS + VLM + Image Gen) ───────────────
+  media-service:
+    build: ../media-service
+    ports:
+      - "8010:8010"
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      TTS_VOICE: ru-RU-SvetlanaNeural
+      WHISPER_MODEL: base
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
   # ─── OpenWebUI ──────────────────────────────────────────────────
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
