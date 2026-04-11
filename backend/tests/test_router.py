@@ -62,16 +62,16 @@ def test_no_deterministic_match(router, message):
 
 
 def test_correct_model_assigned(router):
-    """ASR routes to faster-whisper model."""
+    """ASR routes to whisper-turbo-local model."""
     result = router._deterministic("", [{"name": "a.mp3", "mime": "audio/mpeg"}])
     assert result is not None
-    assert result.model_id == "faster-whisper"
+    assert result.model_id == "whisper-turbo-local"
 
 
 def test_code_model_assigned(router):
     result = router._deterministic("Напиши функцию сортировки", [])
     assert result is not None
-    assert result.model_id == "kodify-2.0"
+    assert result.model_id == "qwen3-coder-480b-a35b"
 
 
 def test_deep_research_tools(router):
