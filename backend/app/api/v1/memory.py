@@ -1,7 +1,29 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from app.db.repositories.memory_repo import MemoryRepository, get_memory_repo
+from app.services.embedding_service import EmbeddingService, get_embedding_service
 
 router = APIRouter()
+
+
+class MemorySearchRequest(BaseModel):
+    query: str
+    top_k: int = 10
+
+
+@router.post("/{user_id}/search")
+async def search_memories(
+    user_id: str,
+    req: MemorySearchRequest,
+    repo: MemoryRepository = Depends(get_memory_repo),
+    embedder: EmbeddingService = Depends(get_embedding_service),
+):
+    try:
+        vector = await embedder.embed(req.query)
+        results = await repo.search(user_id=user_id, query_vector=vector, top_k=req.top_k)
+    except Exception as e:
+        return {"user_id": user_id, "results": [], "error": str(e)}
+    return {"user_id": user_id, "results": results}
 
 
 @router.get("/{user_id}")

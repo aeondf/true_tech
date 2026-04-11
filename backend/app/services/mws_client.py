@@ -32,7 +32,7 @@ class MWSClient:
         return httpx.AsyncClient(
             base_url=self._base_url,
             headers=self._headers,
-            timeout=120,
+            timeout=300,  # 5 минут — тяжёлые модели могут долго отвечать
         )
 
     # ── Regular (non-streaming) ───────────────────────────────────

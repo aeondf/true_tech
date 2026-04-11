@@ -16,7 +16,7 @@ class WebParserService:
     async def parse(self, url: str, extract_links: bool = False) -> dict:
         try:
             async with httpx.AsyncClient(
-                headers=self._HEADERS, timeout=15, follow_redirects=True
+                headers=self._HEADERS, timeout=15, follow_redirects=True, verify=False
             ) as client:
                 r = await client.get(url)
                 r.raise_for_status()

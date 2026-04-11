@@ -38,7 +38,11 @@ async def voice_message(
     audio_bytes = await audio.read()
 
     # 1. ASR
-    transcript = await asr.transcribe(audio_bytes, filename=audio.filename or "audio.wav")
+    try:
+        transcript = await asr.transcribe(audio_bytes, filename=audio.filename or "audio.wav")
+    except Exception as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content={"error": "ASR недоступен", "detail": str(e)})
 
     # 2. Route (ignore ASR task_type — transcript is now just text)
     route = await router_client.route(message=transcript, attachments=[])

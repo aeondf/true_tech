@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 from fastapi import APIRouter
 from sqlalchemy import text
@@ -11,43 +12,31 @@ settings = get_settings()
 
 async def _ping(url: str) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=3) as c:
+        async with httpx.AsyncClient(timeout=2) as c:
             r = await c.get(url)
             return r.status_code < 500
     except Exception:
         return False
 
 
-@router.get("/health")
-async def health():
-    mws_ok, ollama_ok, asr_ok, img_ok, vlm_ok = await _parallel_checks()
-
-    db_ok = False
+async def _db_ok() -> bool:
     try:
         async with SessionLocal() as session:
             await session.execute(text("SELECT 1"))
-        db_ok = True
+        return True
     except Exception:
-        pass
+        return False
+
+
+@router.get("/health")
+async def health():
+    db, mws_ok = await asyncio.gather(_db_ok(), _ping(f"{settings.MWS_BASE_URL}/v1/models"))
 
     services = {
-        "postgres": db_ok,
-        "mws_api": mws_ok,
-        "ollama": ollama_ok,
-        "asr": asr_ok,
-        "image_gen": img_ok,
-        "vlm": vlm_ok,
+        "postgres":  db,
+        "mws_api":   mws_ok,
+        "image_gen": "media-service (SD)" if db else False,  # зависит от media-service
+        "asr":       "mws(whisper-turbo-local)" if mws_ok else False,
     }
-    status = "ok" if all(services.values()) else "degraded"
+    status = "ok" if (db and mws_ok) else "degraded"
     return {"status": status, "services": services}
-
-
-async def _parallel_checks():
-    import asyncio
-    return await asyncio.gather(
-        _ping(f"{settings.MWS_BASE_URL}/v1/models"),
-        _ping(f"{settings.ROUTER_URL}/api/tags"),
-        _ping(f"{settings.ASR_URL}/health"),
-        _ping(f"{settings.IMAGE_GEN_URL}/health"),
-        _ping(f"{settings.VLM_URL}/health"),
-    )

@@ -19,14 +19,11 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # Router (Ollama fallback)
-    ROUTER_URL: str = "http://localhost:11434"
-    ROUTER_MODEL: str = "qwen2.5:3b"
+    # Router (LLM routing через MWS API)
+    ROUTER_URL: str = "http://localhost:11434"  # legacy, не используется
+    ROUTER_MODEL: str = "qwen2.5:3b"            # legacy, не используется
 
-    # Router local GGUF (takes priority over Ollama when set)
-    ROUTER_GGUF_PATH: str = r"C:\Users\PC\Downloads\qwen2.5-1.5b-instruct-fp16.gguf"
-
-    # ASR (faster-whisper)
+    # ASR (whisper-turbo-local через MWS, fallback на media-service)
     ASR_URL: str = "http://localhost:8001"
 
     # TTS

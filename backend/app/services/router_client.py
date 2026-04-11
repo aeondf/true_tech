@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 """
-Task Router — deterministic rules first, local GGUF (qwen2.5-1.5b) as LLM fallback,
-with Ollama as secondary fallback if GGUF is unavailable.
+Task Router — deterministic rules first, MWS API as LLM fallback.
 
 Route decision:
   Input:  { message: str, attachments: list[Attachment] }
@@ -10,11 +9,8 @@ Route decision:
 """
 import re
 import json
-import asyncio
 import logging
-import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 import httpx
 from fastapi import Depends
@@ -42,7 +38,6 @@ TASK_TOOLS = {
     "file_qa":       ["rag"],
 }
 
-# Audio/video MIME prefixes
 AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".flac"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
@@ -71,60 +66,6 @@ ROUTER_SYSTEM_PROMPT = (
 )
 
 
-# ── Module-level GGUF singleton ───────────────────────────────────────────────
-
-_gguf_llm = None
-_gguf_load_lock: Optional[asyncio.Lock] = None
-_gguf_load_attempted = False
-
-
-def _load_gguf_sync(model_path: str):
-    """Load GGUF model synchronously (runs in executor)."""
-    from llama_cpp import Llama  # type: ignore
-    logger.info("Loading local GGUF model from: %s", model_path)
-    llm = Llama(
-        model_path=model_path,
-        n_ctx=512,
-        n_gpu_layers=0,   # CPU inference; set to -1 to use GPU if available
-        n_threads=4,
-        verbose=False,
-    )
-    logger.info("Local GGUF model loaded successfully.")
-    return llm
-
-
-async def _get_gguf_llm(model_path: str):
-    """Lazily load and return the GGUF Llama instance (thread-safe)."""
-    global _gguf_llm, _gguf_load_lock, _gguf_load_attempted
-
-    if _gguf_llm is not None:
-        return _gguf_llm
-
-    if _gguf_load_attempted:
-        return None  # previous load failed — don't retry
-
-    if _gguf_load_lock is None:
-        _gguf_load_lock = asyncio.Lock()
-
-    async with _gguf_load_lock:
-        if _gguf_llm is not None:
-            return _gguf_llm
-        if _gguf_load_attempted:
-            return None
-
-        _gguf_load_attempted = True
-        try:
-            loop = asyncio.get_event_loop()
-            _gguf_llm = await loop.run_in_executor(None, _load_gguf_sync, model_path)
-        except Exception as exc:
-            logger.warning("Failed to load local GGUF model: %s. Falling back to Ollama.", exc)
-            _gguf_llm = None
-
-    return _gguf_llm
-
-
-# ── Dataclass ─────────────────────────────────────────────────────────────────
-
 @dataclass
 class RouteResult:
     task_type: str
@@ -133,14 +74,12 @@ class RouteResult:
     confidence: float = 1.0
 
 
-# ── Router ────────────────────────────────────────────────────────────────────
-
 class RouterClient:
     def __init__(self, settings: Settings):
-        self.ollama_url = settings.ROUTER_URL
-        self.ollama_model = settings.ROUTER_MODEL
+        self.mws_base = settings.MWS_BASE_URL
+        self.mws_key = settings.MWS_API_KEY
+        self.router_model = settings.MODEL_TEXT  # mws-gpt-alpha для роутинга
         self.fallback_model = settings.MODEL_TEXT
-        self.gguf_path: str = settings.ROUTER_GGUF_PATH
 
     def _deterministic(
         self, message: str, attachments: list[dict]
@@ -177,69 +116,40 @@ class RouterClient:
         if CODE_KEYWORDS.search(message):
             return RouteResult("code", TASK_MODELS["code"], [])
 
-        return None  # needs LLM routing
+        return None
 
-    async def _llm_route_local(self, message: str) -> RouteResult | None:
-        """Use local GGUF model (qwen2.5-1.5b-instruct-fp16.gguf) for routing."""
-        if not self.gguf_path or not os.path.isfile(self.gguf_path):
-            return None
-
-        llm = await _get_gguf_llm(self.gguf_path)
-        if llm is None:
-            return None
-
+    async def _llm_route_mws(self, message: str) -> RouteResult:
+        """Call MWS API (mws-gpt-alpha) for ambiguous routing."""
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: llm.create_chat_completion(
-                    messages=[
-                        {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-                        {"role": "user", "content": message},
-                    ],
-                    response_format={"type": "json_object"},
-                    max_tokens=64,
-                    temperature=0.0,
-                ),
-            )
-            content = response["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-            task_type = parsed.get("task_type", "text")
-            confidence = float(parsed.get("confidence", 0.5))
-        except Exception as exc:
-            logger.warning("Local GGUF routing error: %s", exc)
-            return None
-
-        if confidence < 0.7:
-            task_type = "text"
-
-        model_id = TASK_MODELS.get(task_type, self.fallback_model)
-        tools = TASK_TOOLS.get(task_type, [])
-        return RouteResult(task_type, model_id, tools, confidence)
-
-    async def _llm_route_ollama(self, message: str) -> RouteResult:
-        """Call qwen2.5:3b via Ollama for ambiguous cases (secondary fallback)."""
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post(
-                    f"{self.ollama_url}/api/chat",
+                    f"{self.mws_base}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.mws_key}",
+                        "Content-Type": "application/json",
+                    },
                     json={
-                        "model": self.ollama_model,
+                        "model": self.router_model,
                         "messages": [
                             {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
                             {"role": "user", "content": message},
                         ],
-                        "stream": False,
-                        "format": "json",
+                        "max_tokens": 64,
+                        "temperature": 0.0,
                     },
                 )
                 r.raise_for_status()
-                data = r.json()
-                parsed = json.loads(data["message"]["content"])
+                content = r.json()["choices"][0]["message"]["content"]
+                # Парсим JSON из ответа
+                json_match = re.search(r"\{.*\}", content, re.DOTALL)
+                if json_match:
+                    parsed = json.loads(json_match.group())
+                else:
+                    parsed = json.loads(content)
                 task_type = parsed.get("task_type", "text")
                 confidence = float(parsed.get("confidence", 0.5))
         except Exception as exc:
-            logger.warning("Ollama routing error: %s", exc)
+            logger.warning("MWS routing error: %s", exc)
             task_type, confidence = "text", 0.5
 
         if confidence < 0.7:
@@ -255,13 +165,8 @@ class RouterClient:
         if det is not None:
             return det
 
-        # 2. Local GGUF model (preferred LLM router)
-        local_result = await self._llm_route_local(message)
-        if local_result is not None:
-            return local_result
-
-        # 3. Ollama fallback
-        return await self._llm_route_ollama(message)
+        # 2. MWS API
+        return await self._llm_route_mws(message)
 
 
 def get_router_client(settings: Settings = Depends(get_settings)) -> RouterClient:

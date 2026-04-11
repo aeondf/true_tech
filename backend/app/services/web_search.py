@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 class WebSearchService:
