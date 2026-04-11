@@ -9,8 +9,8 @@ class Settings(BaseSettings):
 
     # Models
     MODEL_TEXT: str = "mws-gpt-alpha"
-    MODEL_CODE: str = "kodify-2.0"
-    MODEL_LONG: str = "cotype-preview-32k"
+    MODEL_CODE: str = "qwen3-coder-480b-a35b"
+    MODEL_LONG: str = "qwen2.5-72b-instruct"
     MODEL_EMBED: str = "bge-m3"
 
     # PostgreSQL + pgvector
@@ -19,9 +19,12 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # Router (Ollama)
+    # Router (Ollama fallback)
     ROUTER_URL: str = "http://localhost:11434"
     ROUTER_MODEL: str = "qwen2.5:3b"
+
+    # Router local GGUF (takes priority over Ollama when set)
+    ROUTER_GGUF_PATH: str = r"C:\Users\PC\Downloads\qwen2.5-1.5b-instruct-fp16.gguf"
 
     # ASR (faster-whisper)
     ASR_URL: str = "http://localhost:8001"

@@ -7,6 +7,7 @@ Async client for MWS GPT API.
   - Exponential backoff on 429 / 503
 """
 import json
+import logging
 from typing import AsyncIterator
 
 import httpx
@@ -14,6 +15,8 @@ from fastapi import Depends
 
 from app.config import Settings, get_settings
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest
+
+logger = logging.getLogger(__name__)
 from app.utils.retry import with_retry
 
 
@@ -42,7 +45,24 @@ class MWSClient:
                 json=request.model_dump(exclude_none=True),
             )
             r.raise_for_status()
-            return r.json()
+            if not r.content:
+                logger.error(
+                    "MWS returned empty body for model=%s status=%s",
+                    request.model, r.status_code,
+                )
+                raise ValueError(
+                    f"MWS returned empty response body (status={r.status_code}, model={request.model})"
+                )
+            try:
+                return r.json()
+            except Exception as exc:
+                logger.error(
+                    "MWS JSON parse error for model=%s status=%s body=%r",
+                    request.model, r.status_code, r.text[:500],
+                )
+                raise ValueError(
+                    f"MWS returned non-JSON body (status={r.status_code}, model={request.model}): {r.text[:200]}"
+                ) from exc
 
     @with_retry(retries=3, retry_on={429, 503})
     async def completion(self, request: CompletionRequest) -> dict:
