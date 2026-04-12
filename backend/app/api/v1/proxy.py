@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.database import get_session, SessionLocal
-from app.db.models import RouterLog
+from app.db.models import RouterLog, User, Conversation, Message as DBMessage
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
 from app.services.cascade_router import CascadeRouter, get_cascade_router
 from app.services.chunk_store import ChunkStore, get_chunk_store
@@ -119,6 +119,84 @@ async def _log_route(
         pass
 
 
+async def _ensure_user_and_conversation(
+    session, user_id: str, conversation_id: str
+) -> None:
+    """Upsert user + conversation rows."""
+    from sqlalchemy import select as _select
+    # User
+    u = (await session.execute(_select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not u:
+        session.add(User(id=user_id))
+    # Conversation
+    c = (await session.execute(_select(Conversation).where(Conversation.id == conversation_id))).scalar_one_or_none()
+    if not c:
+        session.add(Conversation(id=conversation_id, user_id=user_id))
+    await session.commit()
+
+
+async def _save_messages(
+    user_id: str,
+    conversation_id: str,
+    user_text: str,
+    assistant_payload,  # str or bytes (SSE stream)
+) -> None:
+    """Persist user + assistant messages to DB. Fire-and-forget."""
+    import json as _json
+    try:
+        async with SessionLocal() as session:
+            await _ensure_user_and_conversation(session, user_id, conversation_id)
+
+            # Save user message
+            session.add(DBMessage(
+                id=str(uuid.uuid4()),
+                conversation_id=conversation_id,
+                role="user",
+                content=user_text,
+            ))
+
+            # Extract assistant text
+            assistant_text = ""
+            if isinstance(assistant_payload, str):
+                assistant_text = assistant_payload
+            elif isinstance(assistant_payload, bytes):
+                # Parse SSE: data: {"choices":[{"delta":{"content":"..."}}]}
+                for line in assistant_payload.decode("utf-8", errors="ignore").splitlines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = _json.loads(data_str)
+                        token = data["choices"][0]["delta"].get("content", "")
+                        if token:
+                            assistant_text += token
+                    except Exception:
+                        continue
+
+            if assistant_text:
+                session.add(DBMessage(
+                    id=str(uuid.uuid4()),
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=assistant_text,
+                ))
+
+            # Auto-title: set on first message (if no title yet)
+            from sqlalchemy import select as _sel
+            conv = (await session.execute(
+                _sel(Conversation).where(Conversation.id == conversation_id)
+            )).scalar_one_or_none()
+            if conv and not conv.title:
+                conv.title = user_text[:80]
+
+            await session.commit()
+    except Exception:
+        pass
+
+
 # ── Endpoints ────────────────────────────────────────────────────
 
 @router.post("/chat/completions")
@@ -180,15 +258,37 @@ async def chat_completions(
     )
 
     # 7. Forward to MWS
+    conversation_id: str = body.get("conversation_id", "")
     try:
         if request.stream:
+            async def _stream_and_save():
+                collected = []
+                async for chunk in mws.stream_chat(request):
+                    collected.append(chunk)
+                    yield chunk
+                # Save after stream ends (fire & forget)
+                if conversation_id:
+                    asyncio.create_task(
+                        _save_messages(user_id, conversation_id, message_text, b"".join(collected))
+                    )
+
             return StreamingResponse(
-                mws.stream_chat(request),
+                _stream_and_save(),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
         response = await mws.chat(request)
+        # Save to history (fire & forget)
+        if conversation_id:
+            assistant_text = ""
+            try:
+                assistant_text = response["choices"][0]["message"]["content"]
+            except Exception:
+                pass
+            asyncio.create_task(
+                _save_messages(user_id, conversation_id, message_text, assistant_text)
+            )
         return JSONResponse(content=response)
 
     except httpx.HTTPStatusError as e:

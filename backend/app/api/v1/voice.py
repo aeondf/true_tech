@@ -47,25 +47,37 @@ async def voice_message(
     # 2. Route (ignore ASR task_type — transcript is now just text)
     route = await router_client.route(message=transcript, attachments=[])
 
-    # 3. LLM
+    # 3. LLM (limit output for voice — short spoken answers)
     req = ChatCompletionRequest(
         model=route.model_id,
-        messages=[Message(role="user", content=transcript)],
+        messages=[
+            Message(role="system", content="Отвечай кратко, не более 3-4 предложений. Ответ будет зачитан вслух."),
+            Message(role="user", content=transcript),
+        ],
+        max_tokens=300,
     )
     llm_resp = await mws.chat(req)
     answer = llm_resp["choices"][0]["message"]["content"]
 
-    # 4. TTS
-    audio_out = await tts.synthesize(answer)
-
-    return Response(
-        content=audio_out,
-        media_type="audio/mpeg",
-        headers={
-            "X-Transcript": transcript.replace("\n", " "),
-            "X-Answer": answer[:500].replace("\n", " "),
-        },
-    )
+    # 4. TTS (Silero → edge-tts → JSON fallback)
+    try:
+        import urllib.parse
+        audio_out, mime = await tts.synthesize(answer[:800])
+        return Response(
+            content=audio_out,
+            media_type=mime,
+            headers={
+                "X-Transcript": urllib.parse.quote(transcript[:500]),
+                "X-Answer": urllib.parse.quote(answer[:500]),
+            },
+        )
+    except Exception:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={
+            "transcript": transcript,
+            "answer": answer,
+            "tts_available": False,
+        })
 
 
 @router.websocket("/ws/voice")
@@ -106,10 +118,13 @@ async def ws_voice(
                 await websocket.send_json({"type": "token", "text": token})
                 full_text += token
 
-            # TTS → send binary
+            # TTS → send binary (fallback to done event if unavailable)
             if full_text:
-                audio_out = await tts.synthesize(full_text)
-                await websocket.send_bytes(audio_out)
+                try:
+                    audio_out, _ = await tts.synthesize(full_text)
+                    await websocket.send_bytes(audio_out)
+                except Exception:
+                    await websocket.send_json({"type": "done", "text": full_text, "tts_available": False})
 
     except WebSocketDisconnect:
         pass

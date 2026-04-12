@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1 import proxy, tools, files, voice, images, memory, research, health
+from app.api.v1 import proxy, tools, files, voice, images, memory, research, health, history
 
 api_router = APIRouter()
 
@@ -26,3 +26,6 @@ api_router.include_router(research.router, prefix="/v1", tags=["research"])
 
 # Health checks
 api_router.include_router(health.router, prefix="/v1", tags=["health"])
+
+# Chat history
+api_router.include_router(history.router, prefix="/v1/history", tags=["history"])
