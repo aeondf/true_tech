@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.db.database import init_db
-from app.middleware.rate_limiter import RateLimitMiddleware
 
 
 @asynccontextmanager
@@ -17,7 +16,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MIREA AI Gateway",
     description="Proxy + tools between OpenWebUI and MWS API",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -27,6 +26,5 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(RateLimitMiddleware)
 
 app.include_router(api_router)

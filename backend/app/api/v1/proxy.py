@@ -1,437 +1,89 @@
 from __future__ import annotations
 
 """
-OpenAI-compatible proxy  →  MWS API.
+OpenAI-compatible proxy → MWS API.
 
-Pipeline per request:
-  1. Intercept → Router (deterministic rules / qwen2.5:3b)
-  2. Model substitution
-  3. Memory injection (cosine search → system prompt)
-  4. RAG injection for file_qa (pgvector chunk search)
-  5. Forward to MWS (stream or regular)
-  6. Log router decision asynchronously
+Pipeline:
+  1. Route (3-pass router)
+  2. Forward to MWS (stream or regular)
+  3. Log router decision to DB (fire & forget)
 """
 import asyncio
-import base64
 import logging
 import time
-import traceback
 import uuid
 
-import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 
-_log = logging.getLogger(__name__)
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.config import Settings, get_settings
-from app.db.database import get_session, SessionLocal
-from app.db.models import RouterLog, User, Conversation, Message as DBMessage
-from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
-from app.services.asr_client import ASRClient, get_asr_client
-from app.services.cascade_router import CascadeRouter, get_cascade_router
-from app.services.chunk_store import ChunkStore, get_chunk_store
-from app.services.context_compressor import ContextCompressor, get_context_compressor
-from app.services.embedding_service import EmbeddingService, get_embedding_service
-from app.services.memory_retriever import MemoryRetriever, get_memory_retriever
+from app.db.database import SessionLocal
+from app.db.models import RouterLog
+from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest
 from app.services.mws_client import MWSClient, get_mws_client
 from app.services.router_client import RouterClient, RouteResult, get_router_client
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-# ── Helpers ──────────────────────────────────────────────────────
-
 def _last_user_text(request: ChatCompletionRequest) -> str:
     for m in reversed(request.messages):
         if m.role == "user":
-            return m.content
+            return m.content if isinstance(m.content, str) else ""
     return ""
 
 
-async def _inject_memories(
-    request: ChatCompletionRequest,
-    retriever: MemoryRetriever,
-    user_id: str,
-) -> ChatCompletionRequest:
-    query = _last_user_text(request)
-    memories = await retriever.retrieve(user_id=user_id, query=query)
-    if not memories:
-        return request
-
-    block = "\n".join(f"- {m}" for m in memories)
-    addition = f"\n\n[Факты о пользователе]\n{block}"
-    messages = list(request.messages)
-    if messages and messages[0].role == "system":
-        messages[0] = messages[0].model_copy(
-            update={"content": messages[0].content + addition}
-        )
-    else:
-        messages.insert(0, Message(role="system", content=addition.strip()))
-    return request.model_copy(update={"messages": messages})
-
-
-async def _inject_rag(
-    request: ChatCompletionRequest,
-    chunk_store: ChunkStore,
-    embedder: EmbeddingService,
-    user_id: str,
-) -> ChatCompletionRequest:
-    query = _last_user_text(request)
-    vector = await embedder.embed(query)
-    chunks = await chunk_store.search(user_id=user_id, query_vector=vector, top_k=5)
-    if not chunks:
-        return request
-
-    context = "\n\n".join(
-        f"[Фрагмент {i+1}]\n{c['text']}" for i, c in enumerate(chunks)
-    )
-    addition = f"\n\n[Контекст из файлов пользователя]\n{context}"
-    messages = list(request.messages)
-    if messages and messages[0].role == "system":
-        messages[0] = messages[0].model_copy(
-            update={"content": messages[0].content + addition}
-        )
-    else:
-        messages.insert(0, Message(role="system", content=addition.strip()))
-    return request.model_copy(update={"messages": messages})
-
-
-async def _log_route(
-    user_id: str,
-    message: str,
-    route: RouteResult,
-    latency_ms: int,
-) -> None:
+async def _log_route(user_id: str, message: str, route: RouteResult, latency_ms: int) -> None:
     try:
         async with SessionLocal() as session:
-            log = RouterLog(
+            session.add(RouterLog(
                 id=str(uuid.uuid4()),
                 user_id=user_id,
                 message_preview=message[:512],
                 task_type=route.task_type,
                 model_id=route.model_id,
                 confidence=route.confidence,
+                which_pass=route.which_pass,
                 latency_ms=latency_ms,
-            )
-            session.add(log)
-            await session.commit()
-    except Exception:
-        pass
-
-
-async def _ensure_user_and_conversation(
-    session, user_id: str, conversation_id: str
-) -> None:
-    """Upsert user + conversation rows."""
-    from sqlalchemy import select as _select
-    # User
-    u = (await session.execute(_select(User).where(User.id == user_id))).scalar_one_or_none()
-    if not u:
-        session.add(User(id=user_id))
-    # Conversation
-    c = (await session.execute(_select(Conversation).where(Conversation.id == conversation_id))).scalar_one_or_none()
-    if not c:
-        session.add(Conversation(id=conversation_id, user_id=user_id))
-    await session.commit()
-
-
-async def _save_messages(
-    user_id: str,
-    conversation_id: str,
-    user_text: str,
-    assistant_payload,  # str or bytes (SSE stream)
-) -> None:
-    """Persist user + assistant messages to DB. Fire-and-forget."""
-    import json as _json
-    try:
-        async with SessionLocal() as session:
-            await _ensure_user_and_conversation(session, user_id, conversation_id)
-
-            # Save user message
-            session.add(DBMessage(
-                id=str(uuid.uuid4()),
-                conversation_id=conversation_id,
-                role="user",
-                content=user_text,
             ))
-
-            # Extract assistant text
-            assistant_text = ""
-            if isinstance(assistant_payload, str):
-                assistant_text = assistant_payload
-            elif isinstance(assistant_payload, bytes):
-                # Parse SSE: data: {"choices":[{"delta":{"content":"..."}}]}
-                for line in assistant_payload.decode("utf-8", errors="ignore").splitlines():
-                    line = line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data_str = line[5:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        data = _json.loads(data_str)
-                        token = data["choices"][0]["delta"].get("content", "")
-                        if token:
-                            assistant_text += token
-                    except Exception:
-                        continue
-
-            if assistant_text:
-                session.add(DBMessage(
-                    id=str(uuid.uuid4()),
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=assistant_text,
-                ))
-
-            # Auto-title: set on first message (if no title yet)
-            from sqlalchemy import select as _sel
-            conv = (await session.execute(
-                _sel(Conversation).where(Conversation.id == conversation_id)
-            )).scalar_one_or_none()
-            if conv and not conv.title:
-                conv.title = user_text[:80]
-
             await session.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("Router log write failed: %s", e)
 
-
-# ── Endpoints ────────────────────────────────────────────────────
 
 @router.post("/chat/completions")
 async def chat_completions(
-    raw: Request,
+    request: ChatCompletionRequest,
     mws: MWSClient = Depends(get_mws_client),
     router_client: RouterClient = Depends(get_router_client),
-    retriever: MemoryRetriever = Depends(get_memory_retriever),
-    chunk_store: ChunkStore = Depends(get_chunk_store),
-    embedder: EmbeddingService = Depends(get_embedding_service),
-    compressor: ContextCompressor = Depends(get_context_compressor),
-    cascade: CascadeRouter = Depends(get_cascade_router),
-    asr: ASRClient = Depends(get_asr_client),
-    session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ):
-    body = await raw.json()
-    request = ChatCompletionRequest(**body)
-    user_id: str = body.get("user", "anonymous")
-    attachments: list[dict] = body.get("attachments", [])
-    message_text = _last_user_text(request)
-
-    # 1. Route
+    # Роутинг
     t0 = time.monotonic()
-    route = await router_client.route(
-        message=message_text,
-        attachments=attachments,
-    )
+    attachments: list[dict] = []  # передаётся через raw body если нужно
+    message_text = _last_user_text(request)
+    route = await router_client.route(message=message_text, attachments=attachments)
     latency_ms = int((time.monotonic() - t0) * 1000)
 
-    # 1a. Dispatch специальных task_type — не идут через обычный chat/completions
+    user_id = getattr(request, "user", "anonymous") or "anonymous"
 
-    # ASR: attachment содержит base64-аудио → транскрибируем, переключаемся на текст
-    if route.task_type == "asr":
-        audio_att = next((a for a in attachments if a.get("data")), None)
-        if audio_att:
-            try:
-                audio_bytes = base64.b64decode(audio_att["data"])
-                transcript = await asr.transcribe(audio_bytes, filename=audio_att.get("name", "audio.wav"))
-                # Переключаемся: теперь это текстовый запрос с транскриптом
-                message_text = transcript
-                route = await router_client.route(message=transcript, attachments=[])
-                messages = list(request.messages)
-                # Заменяем последнее user-сообщение транскриптом
-                for i in reversed(range(len(messages))):
-                    if messages[i].role == "user":
-                        messages[i] = messages[i].model_copy(update={"content": transcript})
-                        break
-                request = request.model_copy(update={"messages": messages, "model": route.model_id})
-            except Exception as e:
-                return JSONResponse(status_code=503, content={"error": "ASR недоступен", "detail": str(e)})
-        # Если data нет — аудио не передано, продолжаем как обычный текст
-
-    # image_gen: отправляем в /v1/images/generations и возвращаем ответ
-    elif route.task_type == "image_gen":
-        asyncio.create_task(_log_route(user_id, message_text, route, latency_ms))
-        async with httpx.AsyncClient(timeout=120) as client:
-            try:
-                r = await client.post(
-                    f"{settings.MWS_BASE_URL}/v1/images/generations",
-                    headers={"Authorization": f"Bearer {settings.MWS_API_KEY}", "Content-Type": "application/json"},
-                    json={"model": route.model_id, "prompt": message_text, "size": "1024x1024"},
-                )
-                r.raise_for_status()
-                return JSONResponse(content=r.json())
-            except Exception as e:
-                return JSONResponse(content={"error": str(e), "fallback": True,
-                                             "description": f"Генерация недоступна. Промпт: {message_text}"})
-
-    # VLM: attachment содержит image_url или base64 → multimodal запрос
-    elif route.task_type == "vlm":
-        asyncio.create_task(_log_route(user_id, message_text, route, latency_ms))
-        image_att = next(
-            (a for a in attachments if a.get("mime", "").startswith("image/") or
-             "." + a.get("name", "").rsplit(".", 1)[-1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}),
-            None,
-        )
-        image_content: dict
-        if image_att and image_att.get("data"):
-            mime = image_att.get("mime", "image/jpeg")
-            image_content = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_att['data']}"}}
-        elif image_att and image_att.get("url"):
-            image_content = {"type": "image_url", "image_url": {"url": image_att["url"]}}
-        else:
-            # URL мог быть вставлен прямо в текст сообщения
-            import re as _re
-            url_match = _re.search(r"https?://\S+\.(?:png|jpg|jpeg|webp|gif)(\?\S*)?", message_text, _re.IGNORECASE)
-            if url_match:
-                image_content = {"type": "image_url", "image_url": {"url": url_match.group(0)}}
-            else:
-                return JSONResponse(status_code=400, content={"error": "VLM: изображение не найдено в запросе"})
-        async with httpx.AsyncClient(timeout=60) as client:
-            try:
-                r = await client.post(
-                    f"{settings.MWS_BASE_URL}/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.MWS_API_KEY}", "Content-Type": "application/json"},
-                    json={
-                        "model": route.model_id,
-                        "messages": [{"role": "user", "content": [
-                            {"type": "text", "text": message_text},
-                            image_content,
-                        ]}],
-                        "max_tokens": request.max_tokens or 300,
-                    },
-                )
-                r.raise_for_status()
-                return JSONResponse(content=r.json())
-            except Exception as e:
-                return JSONResponse(content={"answer": None, "fallback": True, "message": str(e)})
-
-    # Если клиент явно указал модель (не "auto") — используем её, иначе подставляем из роутера
-    explicit_model = request.model not in ("auto", "", None)
-    if not explicit_model:
+    # Подставляем модель если клиент не указал явно
+    if request.model in ("auto", "", None):
         request = request.model_copy(update={"model": route.model_id})
 
-    # 2. Compress context if history is too long
-    compressed_messages = await compressor.compress_if_needed(list(request.messages))
-    request = request.model_copy(update={"messages": compressed_messages})
+    # Логируем (fire & forget)
+    asyncio.create_task(_log_route(user_id, message_text, route, latency_ms))
 
-    # 3. Cascade tool execution (web_search + web_parse параллельно если нужно)
-    if route.tools:
-        request = await cascade.run(request, route.tools, message_text)
-
-    # 4. Memory injection (silently skip if embeddings unavailable)
-    try:
-        request = await _inject_memories(request, retriever, user_id)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning("Memory injection failed, skipping: %s", e)
-
-    # 5. RAG injection for file queries (silently skip if embeddings unavailable)
-    if route.task_type == "file_qa":
-        try:
-            request = await _inject_rag(request, chunk_store, embedder, user_id)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("RAG injection failed, skipping: %s", e)
-
-    # 6. Log route decision (fire & forget)
-    asyncio.create_task(
-        _log_route(user_id, message_text, route, latency_ms)
-    )
-
-    # 7. Forward to MWS
-    conversation_id: str = body.get("conversation_id", "")
-    try:
-        if request.stream:
-            async def _stream_and_save():
-                collected = []
-                async for chunk in mws.stream_chat(request):
-                    collected.append(chunk)
-                    yield chunk
-                # Save after stream ends (fire & forget)
-                if conversation_id:
-                    asyncio.create_task(
-                        _save_messages(user_id, conversation_id, message_text, b"".join(collected))
-                    )
-
-            return StreamingResponse(
-                _stream_and_save(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-
-        response = await mws.chat(request)
-        # Save to history (fire & forget)
-        if conversation_id:
-            assistant_text = ""
-            try:
-                assistant_text = response["choices"][0]["message"]["content"]
-            except Exception:
-                pass
-            asyncio.create_task(
-                _save_messages(user_id, conversation_id, message_text, assistant_text)
-            )
-        return JSONResponse(content=response)
-
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        try:
-            detail = e.response.json()
-        except Exception:
-            detail = e.response.text
-        return JSONResponse(
-            status_code=status,
-            content={
-                "error": {
-                    "code": status,
-                    "message": f"MWS API error for model '{request.model}'",
-                    "detail": detail,
-                }
-            },
+    # Форвардим в MWS
+    if request.stream:
+        return StreamingResponse(
+            mws.stream_chat(request),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as e:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": {
-                    "code": 503,
-                    "message": "MWS API недоступен (timeout/connection error)",
-                    "detail": str(e),
-                }
-            },
-        )
-    except ValueError as e:
-        return JSONResponse(
-            status_code=502,
-            content={
-                "error": {
-                    "code": 502,
-                    "message": "MWS API вернул некорректный ответ",
-                    "detail": str(e),
-                }
-            },
-        )
-    except Exception as e:
-        _log.error(
-            "Unhandled exception in chat_completions (model=%s): %s\n%s",
-            getattr(request, "model", "?"),
-            e,
-            traceback.format_exc(),
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": {
-                    "code": 500,
-                    "message": "Internal server error",
-                    "detail": str(e),
-                    "type": type(e).__name__,
-                }
-            },
-        )
+    return JSONResponse(content=await mws.chat(request))
 
 
 @router.post("/completions")
