@@ -149,6 +149,7 @@ class RouterClient:
                 task_type = parsed.get("task_type", "text")
                 confidence = float(parsed.get("confidence", 0.5))
         except Exception as exc:
+            print(exc)
             logger.warning("MWS routing error: %s", exc)
             task_type, confidence = "text", 0.5
 

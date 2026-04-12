@@ -5,10 +5,10 @@ from functools import lru_cache
 class Settings(BaseSettings):
     # MWS API
     MWS_BASE_URL: str = "https://api.gpt.mws.ru"
-    MWS_API_KEY: str = ""  # empty = requests to MWS will fail, but app starts
+    MWS_API_KEY: str = "sk-ewgiaPC3A6pPDYHwR8siVA"  # empty = requests to MWS will fail, but app starts
 
     # Models
-    MODEL_TEXT: str = "mws-gpt-alpha"
+    MODEL_TEXT: str = "qwen2.5-72b-instruct"
     MODEL_CODE: str = "qwen3-coder-480b-a35b"
     MODEL_LONG: str = "qwen2.5-72b-instruct"
     MODEL_EMBED: str = "bge-m3"

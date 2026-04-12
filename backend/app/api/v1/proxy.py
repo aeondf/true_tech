@@ -12,6 +12,7 @@ Pipeline per request:
   6. Log router decision asynchronously
 """
 import asyncio
+import base64
 import logging
 import time
 import traceback
@@ -28,6 +29,7 @@ from app.config import Settings, get_settings
 from app.db.database import get_session, SessionLocal
 from app.db.models import RouterLog, User, Conversation, Message as DBMessage
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
+from app.services.asr_client import ASRClient, get_asr_client
 from app.services.cascade_router import CascadeRouter, get_cascade_router
 from app.services.chunk_store import ChunkStore, get_chunk_store
 from app.services.context_compressor import ContextCompressor, get_context_compressor
@@ -209,21 +211,104 @@ async def chat_completions(
     embedder: EmbeddingService = Depends(get_embedding_service),
     compressor: ContextCompressor = Depends(get_context_compressor),
     cascade: CascadeRouter = Depends(get_cascade_router),
+    asr: ASRClient = Depends(get_asr_client),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ):
     body = await raw.json()
     request = ChatCompletionRequest(**body)
     user_id: str = body.get("user", "anonymous")
+    attachments: list[dict] = body.get("attachments", [])
     message_text = _last_user_text(request)
 
     # 1. Route
     t0 = time.monotonic()
     route = await router_client.route(
         message=message_text,
-        attachments=body.get("attachments", []),
+        attachments=attachments,
     )
     latency_ms = int((time.monotonic() - t0) * 1000)
+
+    # 1a. Dispatch специальных task_type — не идут через обычный chat/completions
+
+    # ASR: attachment содержит base64-аудио → транскрибируем, переключаемся на текст
+    if route.task_type == "asr":
+        audio_att = next((a for a in attachments if a.get("data")), None)
+        if audio_att:
+            try:
+                audio_bytes = base64.b64decode(audio_att["data"])
+                transcript = await asr.transcribe(audio_bytes, filename=audio_att.get("name", "audio.wav"))
+                # Переключаемся: теперь это текстовый запрос с транскриптом
+                message_text = transcript
+                route = await router_client.route(message=transcript, attachments=[])
+                messages = list(request.messages)
+                # Заменяем последнее user-сообщение транскриптом
+                for i in reversed(range(len(messages))):
+                    if messages[i].role == "user":
+                        messages[i] = messages[i].model_copy(update={"content": transcript})
+                        break
+                request = request.model_copy(update={"messages": messages, "model": route.model_id})
+            except Exception as e:
+                return JSONResponse(status_code=503, content={"error": "ASR недоступен", "detail": str(e)})
+        # Если data нет — аудио не передано, продолжаем как обычный текст
+
+    # image_gen: отправляем в /v1/images/generations и возвращаем ответ
+    elif route.task_type == "image_gen":
+        asyncio.create_task(_log_route(user_id, message_text, route, latency_ms))
+        async with httpx.AsyncClient(timeout=120) as client:
+            try:
+                r = await client.post(
+                    f"{settings.MWS_BASE_URL}/v1/images/generations",
+                    headers={"Authorization": f"Bearer {settings.MWS_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": route.model_id, "prompt": message_text, "size": "1024x1024"},
+                )
+                r.raise_for_status()
+                return JSONResponse(content=r.json())
+            except Exception as e:
+                return JSONResponse(content={"error": str(e), "fallback": True,
+                                             "description": f"Генерация недоступна. Промпт: {message_text}"})
+
+    # VLM: attachment содержит image_url или base64 → multimodal запрос
+    elif route.task_type == "vlm":
+        asyncio.create_task(_log_route(user_id, message_text, route, latency_ms))
+        image_att = next(
+            (a for a in attachments if a.get("mime", "").startswith("image/") or
+             "." + a.get("name", "").rsplit(".", 1)[-1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}),
+            None,
+        )
+        image_content: dict
+        if image_att and image_att.get("data"):
+            mime = image_att.get("mime", "image/jpeg")
+            image_content = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_att['data']}"}}
+        elif image_att and image_att.get("url"):
+            image_content = {"type": "image_url", "image_url": {"url": image_att["url"]}}
+        else:
+            # URL мог быть вставлен прямо в текст сообщения
+            import re as _re
+            url_match = _re.search(r"https?://\S+\.(?:png|jpg|jpeg|webp|gif)(\?\S*)?", message_text, _re.IGNORECASE)
+            if url_match:
+                image_content = {"type": "image_url", "image_url": {"url": url_match.group(0)}}
+            else:
+                return JSONResponse(status_code=400, content={"error": "VLM: изображение не найдено в запросе"})
+        async with httpx.AsyncClient(timeout=60) as client:
+            try:
+                r = await client.post(
+                    f"{settings.MWS_BASE_URL}/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.MWS_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": route.model_id,
+                        "messages": [{"role": "user", "content": [
+                            {"type": "text", "text": message_text},
+                            image_content,
+                        ]}],
+                        "max_tokens": request.max_tokens or 300,
+                    },
+                )
+                r.raise_for_status()
+                return JSONResponse(content=r.json())
+            except Exception as e:
+                return JSONResponse(content={"answer": None, "fallback": True, "message": str(e)})
+
     # Если клиент явно указал модель (не "auto") — используем её, иначе подставляем из роутера
     explicit_model = request.model not in ("auto", "", None)
     if not explicit_model:
