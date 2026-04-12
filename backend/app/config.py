@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     # TTS
     TTS_VOICE: str = "ru-RU-SvetlanaNeural"
 
+    # Auth
+    SECRET_KEY: str = "change-me-in-production-use-long-random-string"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 дней
+
+    # Database
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/mws_gateway"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

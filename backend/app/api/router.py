@@ -1,7 +1,10 @@
 from fastapi import APIRouter
-from app.api.v1 import proxy, voice, images, research, health
+from app.api.v1 import proxy, voice, images, research, health, auth_history
 
 api_router = APIRouter()
+
+# Auth + History + Memory
+api_router.include_router(auth_history.router, prefix="/v1", tags=["auth"])
 
 # OpenAI-compatible proxy
 api_router.include_router(proxy.router, prefix="/v1", tags=["proxy"])
