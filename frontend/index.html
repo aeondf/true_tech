@@ -299,9 +299,15 @@ html,body{height:100%;background:var(--bg);color:var(--tx);
 .h-item.act{background:var(--s2);color:var(--tx);}
 .h-dot{width:4px;height:4px;border-radius:50%;background:var(--dim);flex-shrink:0;transition:background .1s;}
 .h-item.act .h-dot{background:var(--red);}
-.h-item-lb{overflow:hidden;max-width:160px;transition:max-width .3s cubic-bezier(.4,0,.2,1),opacity .2s;}
+.h-item-lb{overflow:hidden;max-width:120px;flex:1;transition:max-width .3s cubic-bezier(.4,0,.2,1),opacity .2s;}
+.h-actions{display:flex;gap:2px;margin-left:auto;opacity:0;transition:opacity .15s;flex-shrink:0;}
+.h-item:hover .h-actions{opacity:1;}
+.h-act-btn{background:none;border:none;color:var(--dim);cursor:pointer;padding:3px;border-radius:4px;display:flex;align-items:center;transition:color .15s,background .15s;}
+.h-act-btn:hover{background:var(--s3);color:var(--tx);}
+.h-del-btn:hover{color:var(--red)!important;}
 .sb.col .h-item{gap:0;justify-content:center;padding:7px 0;}
 .sb.col .h-item-lb{max-width:0;opacity:0;}
+.sb.col .h-actions{display:none;}
 .sb-foot{padding:7px 6px;border-top:1px solid var(--border);}
 .u-row{
   display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:9px;
@@ -487,10 +493,22 @@ html,body{height:100%;background:var(--bg);color:var(--tx);
 .m-dd{
   position:absolute;bottom:calc(100% + 8px);right:0;background:var(--onyx);
   border:1px solid var(--border);border-radius:12px;overflow:hidden;z-index:9000;
-  min-width:225px;box-shadow:0 -10px 32px rgba(0,0,0,.7);display:none;
+  min-width:240px;max-width:280px;box-shadow:0 -10px 32px rgba(0,0,0,.7);display:none;
+  display:none;
 }
-.m-dd.open{display:block;animation:popUp .18s cubic-bezier(.34,1.56,.64,1);}
+.m-dd.open{display:flex;flex-direction:column;animation:popUp .18s cubic-bezier(.34,1.56,.64,1);}
 @keyframes popUp{from{opacity:0;transform:translateY(7px) scale(.96)}to{opacity:1;transform:none}}
+.dd-search-wrap{padding:8px 10px 6px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.dd-search{
+  width:100%;background:var(--s2);border:1px solid var(--border);border-radius:7px;
+  color:var(--tx);font-size:12px;padding:6px 10px;outline:none;font-family:inherit;
+  transition:border-color .2s;
+}
+.dd-search:focus{border-color:var(--dim);}
+.dd-list{overflow-y:auto;max-height:280px;overscroll-behavior:contain;}
+.dd-list::-webkit-scrollbar{width:4px;}
+.dd-list::-webkit-scrollbar-track{background:transparent;}
+.dd-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
 .dd-hdr{padding:8px 13px 3px;font-size:10px;font-weight:700;letter-spacing:.8px;color:var(--dim);text-transform:uppercase;}
 .dd-opt{
   display:flex;align-items:center;gap:9px;padding:8px 13px;
@@ -499,17 +517,19 @@ html,body{height:100%;background:var(--bg);color:var(--tx);
 }
 .dd-opt:hover{background:var(--s2);transform:translateX(2px);}
 .dd-opt.sel{background:var(--red-dim);}
+.dd-opt.hidden{display:none;}
 .dd-ico{
   width:24px;height:24px;border-radius:6px;background:var(--s2);
   display:flex;align-items:center;justify-content:center;flex-shrink:0;
   transition:transform .2s cubic-bezier(.34,1.56,.64,1);
 }
 .dd-opt:hover .dd-ico{transform:scale(1.12);}
-.dd-info{flex:1;}
-.dd-nm{font-size:12.5px;font-weight:600;}
-.dd-sb{font-size:11px;color:var(--muted);}
+.dd-info{flex:1;min-width:0;}
+.dd-nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dd-sb{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .dd-chk{color:var(--red);font-size:12px;flex-shrink:0;}
 .dd-sep{height:1px;background:var(--border);margin:3px 0;}
+.dd-empty{padding:14px 13px;font-size:12px;color:var(--dim);text-align:center;}
 .send{
   width:31px;height:31px;border-radius:8px;background:var(--red);border:none;
   display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;
@@ -1143,17 +1163,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);
     </button>
   </div>
 
-  <div class="sb-hist">
-    <div class="h-grp" data-i18n="hist.today">Сегодня</div>
-    <div class="h-item act rh" onclick="openH(this)"><div class="h-dot"></div><span class="h-item-lb">Анализ данных МТС</span></div>
-    <div class="h-item rh" onclick="openH(this)"><div class="h-dot"></div><span class="h-item-lb">Генерация кода API</span></div>
-    <div class="h-item rh" onclick="openH(this)"><div class="h-dot"></div><span class="h-item-lb">NLP обработка текста</span></div>
-    <div class="h-grp" data-i18n="hist.yesterday">Вчера</div>
-    <div class="h-item rh" onclick="openH(this)"><div class="h-dot"></div><span class="h-item-lb">Сравнение моделей</span></div>
-    <div class="h-item rh" onclick="openH(this)"><div class="h-dot"></div><span class="h-item-lb">Документация проекта</span></div>
-    <div class="h-grp" data-i18n="hist.earlier">Ранее</div>
-    <div class="h-item rh" onclick="openH(this)"><div class="h-dot"></div><span class="h-item-lb">Синтез речи TTS</span></div>
-    <div class="h-item rh" onclick="openH(this)"><div class="h-dot"></div><span class="h-item-lb">Поиск по базе знаний</span></div>
+  <div class="sb-hist" id="sb-hist">
+    <div style="padding:12px 10px;font-size:11.5px;color:var(--dim)">Загрузка истории...</div>
   </div>
 
   <div class="sb-foot">
@@ -1519,9 +1530,9 @@ html,body{height:100%;background:var(--bg);color:var(--tx);
       <button class="prof-save rh" onclick="savePlan()">Применить тариф</button>
     </div>
   </div>
+  <div class="ov" id="ov" onclick="closeAll()"></div>
 </div>
 
-<div class="ov" id="ov" onclick="closeAll()"></div>
 <div id="toastRoot"></div>
 
 
@@ -1681,12 +1692,25 @@ function buildDD(ddId){
   if(!dd) return;
   dd.innerHTML = '';
 
+  // Поисковая строка
+  const searchWrap = document.createElement('div'); searchWrap.className='dd-search-wrap';
+  const searchInp  = document.createElement('input');
+  searchInp.className='dd-search'; searchInp.placeholder='Поиск модели...'; searchInp.type='text';
+  searchInp.onclick = e=>e.stopPropagation();
+  searchWrap.appendChild(searchInp);
+  dd.appendChild(searchWrap);
+
+  // Прокручиваемый список
+  const list = document.createElement('div'); list.className='dd-list';
+  dd.appendChild(list);
+
   // «Авто» всегда первым
   const autoDiv = document.createElement('div');
   autoDiv.className = 'dd-opt' + (selectedModel==='auto'?' sel':'');
+  autoDiv.dataset.search = 'авто auto';
   autoDiv.innerHTML = `<div class="dd-ico"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div><div class="dd-info"><div class="dd-nm">Авто</div><div class="dd-sb">Оптимальная модель подбирается автоматически</div></div>${selectedModel==='auto'?'<span class="dd-chk">✓</span>':''}`;
   autoDiv.onclick = e=>{ e.stopPropagation(); pickModel('auto','Авто',true); };
-  dd.appendChild(autoDiv);
+  list.appendChild(autoDiv);
 
   // Группировка
   const groups = {};
@@ -1695,17 +1719,45 @@ function buildDD(ddId){
     groups[m.group].push(m);
   });
 
+  const groupEls = []; // для поиска: {sep, hdr, opts[]}
   for(const [grpName, models] of Object.entries(groups)){
-    const sep = document.createElement('div'); sep.className='dd-sep'; dd.appendChild(sep);
-    const hdr = document.createElement('div'); hdr.className='dd-hdr'; hdr.textContent=grpName; dd.appendChild(hdr);
+    const sep = document.createElement('div'); sep.className='dd-sep'; list.appendChild(sep);
+    const hdr = document.createElement('div'); hdr.className='dd-hdr'; hdr.textContent=grpName; list.appendChild(hdr);
+    const grpOpts = [];
     models.forEach(m=>{
       const opt = document.createElement('div');
       opt.className = 'dd-opt'+(selectedModel===m.id?' sel':'');
+      opt.dataset.search = (m.name+' '+m.id+' '+grpName).toLowerCase();
       opt.innerHTML = `<div class="dd-ico">${m.icon}</div><div class="dd-info"><div class="dd-nm">${esc(m.name)}</div><div class="dd-sb">${esc(m.id)}</div></div>${selectedModel===m.id?'<span class="dd-chk">✓</span>':''}`;
       opt.onclick = e=>{ e.stopPropagation(); pickModel(m.id, m.name, false); };
-      dd.appendChild(opt);
+      list.appendChild(opt);
+      grpOpts.push(opt);
     });
+    groupEls.push({sep, hdr, opts: grpOpts});
   }
+
+  // Поиск по моделям
+  const emptyMsg = document.createElement('div'); emptyMsg.className='dd-empty'; emptyMsg.textContent='Ничего не найдено'; emptyMsg.style.display='none'; list.appendChild(emptyMsg);
+
+  searchInp.oninput = ()=>{
+    const q = searchInp.value.toLowerCase().trim();
+    let anyVisible = false;
+    // авто
+    const autoMatch = !q || 'авто auto'.includes(q);
+    autoDiv.classList.toggle('hidden', !autoMatch);
+    groupEls.forEach(({sep, hdr, opts})=>{
+      let grpAny = false;
+      opts.forEach(opt=>{
+        const match = !q || opt.dataset.search.includes(q);
+        opt.classList.toggle('hidden', !match);
+        if(match) grpAny = true;
+      });
+      sep.style.display = grpAny ? '' : 'none';
+      hdr.style.display = grpAny ? '' : 'none';
+      if(grpAny) anyVisible = true;
+    });
+    emptyMsg.style.display = (!anyVisible && !autoMatch) ? '' : 'none';
+  };
 }
 
 function pickModel(id, name, isAuto){
@@ -1812,6 +1864,19 @@ function closeAgModal(e){
   document.getElementById('ov').classList.remove('on');
 }
 
+// ── Agent system prompts ─────────────────────
+const AGENT_SYSTEM_PROMPTS = {
+  assistant:    null,
+  code:         'Ты — опытный разработчик программного обеспечения. Помогай с написанием, ревью, отладкой и документированием кода. Давай чистый, рабочий код с краткими пояснениями.',
+  vision:       'Ты — мультимодальный ИИ-ассистент. Детально анализируй прикреплённые изображения, описывай содержимое, распознавай текст (OCR) и отвечай на вопросы о визуальных данных.',
+  imagegen:     null,
+  corporate:    'Ты — профессиональный бизнес-ассистент. Помогай с деловыми документами, отчётами, KPI-анализом, презентациями и корпоративной перепиской. Используй официально-деловой стиль.',
+  websearch:    'Ты — ИИ-ассистент с доступом к поиску в интернете. Используй актуальную информацию для ответов. Обязательно указывай источники в формате [ссылка]. Если информация устарела, предупреди об этом.',
+  deepresearch: null,
+  audio:        'Ты — ассистент по анализу аудиоконтента. Помогай с транскрипцией, анализом речи, определением спикеров и извлечением ключевых моментов из записей.',
+  docs:         'Ты — ассистент по работе с документами. Анализируй загруженные файлы (PDF, Word, Excel), делай краткое изложение, отвечай на вопросы по содержимому и сравнивай документы. Попроси пользователя прикрепить документ, если он не приложен.',
+};
+
 // ── Select agent with transition ─────────────
 function selectAgent(idx){
   const a=AGENTS[idx]; currentAgent=a; closeAll();
@@ -1834,7 +1899,10 @@ function selectAgent(idx){
       panel.classList.remove('has-messages');
       document.getElementById('inpZoneBottom').style.display='none';
       document.getElementById('chatInner').innerHTML='';
-      currentMessages=[]; currentConvId=uuid();
+      // Сбрасываем контекст и ставим системный промпт агента
+      currentConvId=uuid();
+      const sysPrompt = AGENT_SYSTEM_PROMPTS[a.id];
+      currentMessages = sysPrompt ? [{role:'system', content:sysPrompt}] : [];
       sw('chat',document.getElementById('nav-chat'));
       setTimeout(()=>document.getElementById('inpHero').focus(),80);
     },350);
@@ -1877,6 +1945,34 @@ async function loadHistory(){
   } catch {}
 }
 
+async function deleteConversation(convId){
+  if(!currentUserId||!convId) return;
+  try {
+    const r=await fetch(`${API}/history/${currentUserId}/${convId}`,{method:'DELETE'});
+    if(r.ok){
+      if(currentConvId===convId){
+        // Если удалили текущий — открываем новый чат
+        newChat();
+      }
+      loadHistory();
+      toast('Диалог удалён','ok',2000);
+    } else { toast('Ошибка удаления','err'); }
+  } catch { toast('Ошибка удаления','err'); }
+}
+
+async function renameConversation(convId, currentTitle){
+  const newTitle=prompt('Новое название диалога:', currentTitle||'');
+  if(!newTitle||!newTitle.trim()) return;
+  try {
+    const r=await fetch(`${API}/history/${currentUserId}/${convId}`,{
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({title:newTitle.trim()})
+    });
+    if(r.ok){ loadHistory(); toast('Переименовано','ok',1800); }
+    else { toast('Ошибка переименования','err'); }
+  } catch { toast('Ошибка переименования','err'); }
+}
+
 function renderSidebarHistory(convs){
   const hist=document.getElementById('sb-hist'); hist.innerHTML='';
   if(!convs.length){ hist.innerHTML='<div style="padding:12px 10px;font-size:11.5px;color:var(--dim)">История пустая</div>'; return; }
@@ -1897,7 +1993,8 @@ function renderSidebarHistory(convs){
     list.forEach(c=>{
       const item=document.createElement('div');
       item.className='h-item rh'; item.dataset.convId=c.id;
-      item.innerHTML=`<div class="h-dot"></div><span class="h-item-lb">${esc((c.title||'Без названия').slice(0,40))}</span>`;
+      const title=esc((c.title||'Без названия').slice(0,40));
+      item.innerHTML=`<div class="h-dot"></div><span class="h-item-lb">${title}</span><div class="h-actions"><button class="h-act-btn" title="Переименовать" onclick="event.stopPropagation();renameConversation('${c.id}','${esc(c.title||'')}')"><svg width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg></button><button class="h-act-btn h-del-btn" title="Удалить" onclick="event.stopPropagation();deleteConversation('${c.id}')"><svg width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg></button></div>`;
       item.onclick=()=>{ document.querySelectorAll('.h-item').forEach(h=>h.classList.remove('act')); item.classList.add('act'); openConversation(c.id); };
       hist.appendChild(item); addRipple(item);
     });
@@ -2133,7 +2230,7 @@ async function doSend(src){
   const ta=src==='hero'?document.getElementById('inpHero'):document.getElementById('inpBot');
   const chipsId=src==='hero'?'fChipsHero':'fChipsBot';
   const chips=document.getElementById(chipsId);
-  const txt=ta.value.trim();
+  let txt=ta.value.trim();
   const voiceId=src==='hero'?'H':'B';
   const voiceChip=chips?.querySelector('.v-chip');
 
@@ -2144,7 +2241,10 @@ async function doSend(src){
     ta.value=''; ta.style.height='auto';
     return;
   }
-  if(!txt) return;
+
+  // Проверяем: если нет текста — проверяем есть ли файлы
+  const pendingFileChips = chips?[...chips.querySelectorAll('.f-chip:not(.v-chip)')]:[];
+  if(!txt && !pendingFileChips.length) return;
 
   const panel=document.getElementById('panel-chat');
   const ci=document.getElementById('chatInner');
@@ -2157,12 +2257,21 @@ async function doSend(src){
 
   // Собираем attachments из чипов
   const attachments=[];
-  const fileChips=chips?[...chips.querySelectorAll('.f-chip:not(.v-chip)')]:[];
-  for(const ch of fileChips){
+  for(const ch of pendingFileChips){
     const att={name:ch.dataset.name, mime:ch.dataset.mime||'application/octet-stream'};
     if(ch.dataset.b64) att.data=ch.dataset.b64;         // base64 для изображений
     attachments.push(att);
   }
+
+  // Если текст пустой, но есть файлы — генерируем авто-подпись
+  if(!txt && attachments.length){
+    const hasDoc = attachments.some(a=>/\.(pdf|docx|txt)$/i.test(a.name||''));
+    const hasImg = attachments.some(a=>a.data || /\.(png|jpg|jpeg|gif|webp)$/i.test(a.name||''));
+    if(hasDoc)      txt='Проанализируй этот документ';
+    else if(hasImg) txt='Опиши это изображение';
+    else            txt='Проанализируй прикреплённый файл';
+  }
+  if(!txt) return;
 
   ta.value=''; ta.style.height='auto';
   if(chips) chips.innerHTML='';
@@ -2180,6 +2289,7 @@ async function doSend(src){
 
   if(currentAgent?.id==='deepresearch'){ typing.remove(); await doDeepResearch(txt,ci); return; }
   if(currentAgent?.id==='imagegen'){     typing.remove(); await doImageGen(txt,ci);     return; }
+  if(currentAgent?.id==='websearch'){    typing.remove(); await doWebSearch(txt,ci);    return; }
 
   isStreaming=true;
   try {
@@ -2201,41 +2311,64 @@ async function doSend(src){
     }
 
     document.getElementById('typing')?.remove();
-    // Создаём bubble без контента — заполним при стриминге
-    const aiEl=appendMsg('ai','',false,null);
-    const bbl=aiEl.querySelector('.msg-bbl');
-    let full=''; let buf=''; let usedModelId=null;
 
-    const reader=resp.body.getReader();
-    const dec=new TextDecoder();
-    while(true){
-      const {done,value}=await reader.read();
-      if(done) break;
-      buf+=dec.decode(value,{stream:true});
-      const lines=buf.split('\n'); buf=lines.pop()||'';
-      for(const line of lines){
-        if(!line.startsWith('data:')) continue;
-        const data=line.slice(5).trim();
-        if(data==='[DONE]') break;
-        try {
-          const json=JSON.parse(data);
-          // Реальная модель из первого чанка (или из любого)
-          if(json.model && json.model!=='auto' && !usedModelId){
-            usedModelId=json.model;
-            updateMsgModel(aiEl,usedModelId);
-          }
-          const delta=json.choices?.[0]?.delta?.content||'';
-          if(delta){ full+=delta; bbl.innerHTML=renderMd(full); scrollBot(); }
-        } catch {}
+    const ct = resp.headers.get('content-type')||'';
+    let full=''; let usedModelId=null;
+
+    if(ct.includes('application/json')){
+      // Бэкенд вернул JSON напрямую (VLM, image_gen через chat proxy)
+      const data = await resp.json();
+      // Обработка изображения из chat proxy (task_type=image_gen)
+      if(data.data && data.data[0]){
+        const imgItem = data.data[0];
+        const imgSrc = imgItem.url || (imgItem.b64_json ? `data:image/png;base64,${imgItem.b64_json}` : null);
+        if(imgSrc){
+          const imgEl=document.createElement('div'); imgEl.className='msg';
+          imgEl.innerHTML=`<div class="msg-av ai">AI</div><div class="msg-body"><div class="msg-meta"><span class="msg-sender">Image Gen</span></div><div class="msg-bbl"><img src="${imgSrc}" alt="${esc(txt)}" style="max-width:100%;border-radius:10px;margin-top:6px;display:block" onerror="this.parentElement.innerHTML='<span style=color:var(--muted)>⚠ Не удалось загрузить изображение</span>'"><br><small style="color:var(--muted)">${esc(imgItem.revised_prompt||txt)}</small></div></div>`;
+          ci.appendChild(imgEl); scrollBot();
+          full=`[Изображение: ${imgItem.revised_prompt||txt}]`;
+        }
+      } else {
+        // VLM или другой JSON-ответ
+        usedModelId = data.model||null;
+        full = data.choices?.[0]?.message?.content
+            || data.answer
+            || data.description
+            || data.error
+            || 'Ответ получен';
+        const aiEl=appendMsg('ai',full,true,usedModelId);
+        aiEl.querySelector('.copyBtn').onclick=()=>{ navigator.clipboard.writeText(full).then(()=>toast('Скопировано','ok',1500)); };
       }
+    } else {
+      // SSE-стрим (обычный чат)
+      const aiEl=appendMsg('ai','',false,null);
+      const bbl=aiEl.querySelector('.msg-bbl');
+      let buf='';
+      const reader=resp.body.getReader();
+      const dec=new TextDecoder();
+      while(true){
+        const {done,value}=await reader.read();
+        if(done) break;
+        buf+=dec.decode(value,{stream:true});
+        const lines=buf.split('\n'); buf=lines.pop()||'';
+        for(const line of lines){
+          if(!line.startsWith('data:')) continue;
+          const data=line.slice(5).trim();
+          if(data==='[DONE]') break;
+          try {
+            const json=JSON.parse(data);
+            if(json.model && json.model!=='auto' && !usedModelId){
+              usedModelId=json.model; updateMsgModel(aiEl,usedModelId);
+            }
+            const delta=json.choices?.[0]?.delta?.content||'';
+            if(delta){ full+=delta; bbl.innerHTML=renderMd(full); scrollBot(); }
+          } catch {}
+        }
+      }
+      if(!usedModelId && selectedModel!=='auto') updateMsgModel(aiEl, selectedModel);
+      aiEl.querySelector('.copyBtn').onclick=()=>{ navigator.clipboard.writeText(full).then(()=>toast('Скопировано','ok',1500)); };
     }
 
-    // Финализируем: если модель так и не пришла — оставить выбранную
-    if(!usedModelId && selectedModel!=='auto'){
-      updateMsgModel(aiEl, selectedModel);
-    }
-
-    aiEl.querySelector('.copyBtn').onclick=()=>{ navigator.clipboard.writeText(full).then(()=>toast('Скопировано','ok',1500)); };
     currentMessages.push({role:'assistant',content:full});
     setTimeout(()=>loadHistory(),800);
   } catch(e){
@@ -2338,19 +2471,128 @@ async function doDeepResearch(query,ci){
 // ── Image Gen ────────────────────────────────
 async function doImageGen(prompt,ci){
   isStreaming=true;
-  const typing=document.createElement('div'); typing.className='msg'; typing.id='typing';
-  typing.innerHTML=`<div class="msg-av ai">AI</div><div class="msg-body"><div class="msg-meta"><span class="msg-sender">Image Gen</span></div><div class="msg-bbl" style="color:var(--muted)">🎨 Генерирую изображение...</div></div>`;
-  ci.appendChild(typing); scrollBot();
+  const wrapEl=document.createElement('div'); wrapEl.className='msg';
+  wrapEl.innerHTML=`<div class="msg-av ai">AI</div><div class="msg-body"><div class="msg-meta"><span class="msg-sender">Image Gen</span></div><div class="msg-bbl" id="imgGenBbl" style="line-height:1.6"><div style="color:var(--muted)">🎨 Генерирую изображение по запросу: <em>${esc(prompt)}</em>...</div></div></div>`;
+  ci.appendChild(wrapEl); scrollBot();
+  const bbl=document.getElementById('imgGenBbl');
   try {
-    const r=await fetch(`${API}/image/generate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})});
-    const d=await r.json(); document.getElementById('typing')?.remove();
-    if(d.data&&d.data[0]&&d.data[0].url){
-      const el=document.createElement('div'); el.className='msg';
-      el.innerHTML=`<div class="msg-av ai">AI</div><div class="msg-body"><div class="msg-meta"><span class="msg-sender">Image Gen</span></div><div class="msg-bbl"><img src="${d.data[0].url}" alt="${esc(prompt)}" style="max-width:100%;border-radius:10px;margin-top:6px" onerror="this.style.display='none'"><br><small style="color:var(--muted)">${esc(d.data[0].revised_prompt||prompt)}</small></div></div>`;
-      ci.appendChild(el);
-    } else { appendMsg('ai',d.description||d.error||'Изображение сгенерировано',false,null); }
+    const r=await fetch(`${API}/image/generate`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt, model:'qwen-image', size:'1024x1024'})
+    });
+    const d=await r.json();
+
+    // Определяем источник изображения: url или b64_json
+    let imgSrc=null, caption=prompt;
+    if(d.data&&d.data[0]){
+      const item=d.data[0];
+      if(item.url)           imgSrc=item.url;
+      else if(item.b64_json) imgSrc=`data:image/png;base64,${item.b64_json}`;
+      if(item.revised_prompt) caption=item.revised_prompt;
+    }
+
+    if(imgSrc){
+      bbl.innerHTML=`
+        <img src="${imgSrc}" alt="${esc(prompt)}"
+          style="max-width:100%;border-radius:12px;margin-top:8px;display:block;box-shadow:0 4px 20px rgba(0,0,0,.4)"
+          onload="this.style.opacity=1"
+          onerror="this.parentElement.innerHTML='<span style=color:var(--red)>⚠ Изображение недоступно (URL истёк или сервис вернул ошибку)</span><br><small style=color:var(--muted)>${esc(prompt)}</small>'"
+          style="max-width:100%;border-radius:12px;margin-top:8px;display:block;opacity:0;transition:opacity .4s">
+        <small style="color:var(--muted);display:block;margin-top:6px">${esc(caption)}</small>
+        <a href="${imgSrc.startsWith('data:') ? '#' : imgSrc}" ${imgSrc.startsWith('data:') ? `onclick="downloadImg('${prompt}')" style="cursor:pointer"` : 'target="_blank"'} style="font-size:11px;color:var(--red);text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-top:4px">
+          <svg width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Скачать
+        </a>`;
+      currentMessages.push({role:'assistant',content:`[Сгенерированное изображение: ${caption}]`});
+      // Сохраняем в БД
+      if(currentConvId){
+        fetch(`${API}/history/${currentUserId||'anonymous'}/${currentConvId}/messages`,{
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            messages:[
+              {role:'user', content:prompt},
+              {role:'assistant', content:`[Сгенерированное изображение: ${caption}]`}
+            ],
+            title: prompt.slice(0,80)
+          })
+        }).then(()=>setTimeout(()=>loadHistory(),400)).catch(()=>{});
+      }
+    } else if(d.fallback){
+      // Сервис недоступен — показываем промпт и предлагаем попробовать через чат
+      bbl.innerHTML=`<span style="color:var(--muted)">⚠ Сервис генерации изображений сейчас недоступен.</span><br><small style="color:var(--dim)">Промпт сохранён: ${esc(prompt)}</small>`;
+      toast('Image Gen недоступен','err',3500);
+    } else {
+      bbl.innerHTML=`<span style="color:var(--red)">⚠ ${esc(d.error||'Неизвестная ошибка')}</span>`;
+    }
     scrollBot();
-  } catch(e){ document.getElementById('typing')?.remove(); appendMsg('ai','⚠ Ошибка генерации: '+e.message,false,null); }
+  } catch(e){
+    bbl.innerHTML=`<span style="color:var(--red)">⚠ Ошибка: ${esc(e.message)}</span>`;
+    toast('Ошибка генерации','err');
+  }
+  finally { isStreaming=false; }
+}
+
+function downloadImg(prompt){
+  const img=document.querySelector('#imgGenBbl img');
+  if(!img) return;
+  const a=document.createElement('a');
+  a.href=img.src; a.download=(prompt||'image').slice(0,40).replace(/[^a-zа-я0-9]/gi,'_')+'.png';
+  a.click();
+}
+
+// ── Web Search ───────────────────────────────
+async function doWebSearch(query, ci){
+  isStreaming=true;
+  const el=document.createElement('div'); el.className='msg';
+  el.innerHTML=`<div class="msg-av ai">AI</div><div class="msg-body"><div class="msg-meta"><span class="msg-sender">Поиск</span><span class="msg-badge">Web Search</span></div><div class="msg-bbl" id="searchProg" style="line-height:1.75"><div style="color:var(--muted)">🔍 Ищу в интернете...</div></div></div>`;
+  ci.appendChild(el); scrollBot();
+  const prog=document.getElementById('searchProg');
+  try {
+    // 1. Выполняем поиск
+    const sr=await fetch(`${API}/tools/web-search`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,max_results:5})});
+    if(!sr.ok) throw new Error('Поиск недоступен');
+    const sd=await sr.json();
+    const results=sd.results||[];
+    if(!results.length){ prog.innerHTML='<span style="color:var(--muted)">Результатов не найдено.</span>'; isStreaming=false; return; }
+
+    // Показываем найденные источники
+    const srcDiv=document.createElement('div');
+    srcDiv.style.cssText='margin-bottom:10px;display:flex;flex-wrap:wrap;gap:5px';
+    results.forEach(r=>{
+      const chip=document.createElement('a');
+      chip.href=r.url; chip.target='_blank';
+      chip.style.cssText='font-size:10.5px;padding:2px 8px;border-radius:5px;background:var(--s3);color:var(--muted);text-decoration:none;border:1px solid var(--border);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block';
+      chip.textContent=r.title||r.url;
+      chip.title=r.url;
+      srcDiv.appendChild(chip);
+    });
+    prog.innerHTML=''; prog.appendChild(srcDiv);
+    const ansDiv=document.createElement('div'); prog.appendChild(ansDiv);
+
+    // 2. Синтезируем ответ через LLM со стримингом
+    const context=results.map((r,i)=>`[${i+1}] ${r.title}\n${r.snippet}\nURL: ${r.url}`).join('\n\n');
+    const synthMessages=[
+      {role:'system',content:'Ты — поисковый ассистент. Дай чёткий, структурированный ответ на основе найденных результатов. Цитируй источники в формате [N]. Отвечай на языке вопроса.'},
+      {role:'user',content:`Вопрос: ${query}\n\nНайденные материалы:\n${context}`}
+    ];
+    const resp=await fetch(`${API}/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',messages:synthMessages,stream:true,user:currentUserId||'anonymous'})});
+    if(!resp.ok) throw new Error('LLM недоступен');
+    const reader=resp.body.getReader(); const dec=new TextDecoder();
+    let full=''; let buf='';
+    while(true){
+      const {done,value}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split('\n'); buf=lines.pop()||'';
+      for(const line of lines){
+        if(!line.startsWith('data:')) continue;
+        const data=line.slice(5).trim();
+        if(data==='[DONE]') break;
+        try { const json=JSON.parse(data); const delta=json.choices?.[0]?.delta?.content||''; if(delta){ full+=delta; ansDiv.innerHTML=renderMd(full); scrollBot(); } } catch {}
+      }
+    }
+    currentMessages.push({role:'assistant',content:full});
+    setTimeout(()=>loadHistory(),800);
+  } catch(e){ prog.innerHTML=`<span style="color:var(--red)">⚠ Ошибка: ${esc(e.message)}</span>`; toast('Поиск: ошибка','err'); }
   finally { isStreaming=false; }
 }
 
@@ -2500,7 +2742,13 @@ function authSubmitCode(){
   const btn=document.getElementById('authCodeBtn');
   btn.textContent='✓ Входим...'; btn.disabled=true;
   currentUserId=authEmailVal.toLowerCase().replace(/[^a-z0-9]/g,'_').slice(0,50);
+  localStorage.setItem('mts-user-id', currentUserId);
+  localStorage.setItem('mts-user-email', authEmailVal);
   document.getElementById('profInpEmail').value=authEmailVal;
+  // Обновляем имя в сайдбаре
+  const nameFromEmail = authEmailVal.split('@')[0];
+  document.getElementById('sbUserName').textContent=nameFromEmail;
+  document.getElementById('sbAvatar').textContent=getInitials(nameFromEmail);
   setTimeout(()=>{
     document.getElementById('authScreen').classList.add('out');
     setTimeout(()=>{ document.getElementById('authScreen').style.display='none'; initSplash(); },680);
@@ -2593,6 +2841,8 @@ function savePlan(){
 }
 function logoutProfile(){
   closeProfile();
+  localStorage.removeItem('mts-user-id');
+  localStorage.removeItem('mts-user-email');
   setTimeout(()=>{
     const auth=document.getElementById('authScreen');
     if(auth){
@@ -2606,6 +2856,9 @@ function logoutProfile(){
     }
     currentUserId=null; currentConvId=null; currentMessages=[];
     document.getElementById('sb-hist').innerHTML='';
+    // Сбрасываем имя в сайдбаре
+    document.getElementById('sbUserName').textContent='MTS User';
+    document.getElementById('sbAvatar').textContent='МТ';
   },350);
   toast('Выход из аккаунта','inf');
 }
@@ -2616,9 +2869,24 @@ function logoutProfile(){
   if(t==='light'){ document.documentElement.setAttribute('data-theme','light'); document.getElementById('thTgl').classList.add('on'); }
   const l=localStorage.getItem('mts-lang')||'ru';
   if(l!=='ru') applyLang(l);
-  setTimeout(()=>document.getElementById('authEmail')?.focus(),400);
-  // Инициализируем дропдаун с «Авто» пока не загрузились модели с API
   buildDD('mDDH'); buildDD('mDDB');
+
+  // Проверяем сохранённую сессию — пропускаем экран авторизации
+  const savedId    = localStorage.getItem('mts-user-id');
+  const savedEmail = localStorage.getItem('mts-user-email');
+  if(savedId){
+    currentUserId = savedId;
+    if(savedEmail){
+      document.getElementById('profInpEmail').value = savedEmail;
+      const nameFromEmail = savedEmail.split('@')[0];
+      document.getElementById('sbUserName').textContent = nameFromEmail;
+      document.getElementById('sbAvatar').textContent   = getInitials(nameFromEmail);
+    }
+    document.getElementById('authScreen').style.display='none';
+    initSplash();
+  } else {
+    setTimeout(()=>document.getElementById('authEmail')?.focus(),400);
+  }
 })();
 
 document.querySelectorAll('.prof-save,.prof-logout').forEach(addRipple);

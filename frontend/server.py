@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Simple HTTP server for the MTS AI frontend on port 8005."""
+"""Simple HTTP server for the MTS AI frontend on port 8010."""
 import http.server
 import socketserver
 import os
 
-PORT = 8005
+PORT = 8010
 DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
