@@ -4,12 +4,15 @@ from __future__ import annotations
 OpenAI-compatible proxy  →  MWS API.
 
 Pipeline per request:
-  1. Intercept → Router (deterministic rules / qwen2.5:3b)
+  1. Intercept → Router (deterministic rules / LLM fallback)
   2. Model substitution
-  3. Memory injection (cosine search → system prompt)
-  4. RAG injection for file_qa (pgvector chunk search)
-  5. Forward to MWS (stream or regular)
-  6. Log router decision asynchronously
+  3. Context compression (if history > 8000 tokens)
+  4. Cascade tool execution (web_search / web_parse)
+  5. Memory injection (cosine search → system prompt)
+  6. RAG injection for file_qa (pgvector chunk search)
+  7. Forward to MWS (stream or regular)
+  8. Save history to DB (fire & forget)
+  9. Extract & store memory facts (fire & forget)
 """
 import asyncio
 import logging
@@ -32,6 +35,7 @@ from app.services.cascade_router import CascadeRouter, get_cascade_router
 from app.services.chunk_store import ChunkStore, get_chunk_store
 from app.services.context_compressor import ContextCompressor, get_context_compressor
 from app.services.embedding_service import EmbeddingService, get_embedding_service
+from app.services.memory_extractor import MemoryExtractor
 from app.services.memory_retriever import MemoryRetriever, get_memory_retriever
 from app.services.mws_client import MWSClient, get_mws_client
 from app.services.router_client import RouterClient, RouteResult, get_router_client
@@ -115,8 +119,8 @@ async def _log_route(
             )
             session.add(log)
             await session.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("_log_route failed: %s", e)
 
 
 async def _ensure_user_and_conversation(
@@ -135,14 +139,36 @@ async def _ensure_user_and_conversation(
     await session.commit()
 
 
+def _parse_sse_text(payload: bytes) -> str:
+    """Extract assistant text from collected SSE bytes."""
+    import json as _json
+    text = ""
+    for line in payload.decode("utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data_str = line[5:].strip()
+        if data_str == "[DONE]":
+            break
+        try:
+            data = _json.loads(data_str)
+            token = data["choices"][0]["delta"].get("content", "")
+            if token:
+                text += token
+        except Exception:
+            continue
+    return text
+
+
 async def _save_messages(
     user_id: str,
     conversation_id: str,
     user_text: str,
     assistant_payload,  # str or bytes (SSE stream)
+    settings: Settings | None = None,
 ) -> None:
-    """Persist user + assistant messages to DB. Fire-and-forget."""
-    import json as _json
+    """Persist user + assistant messages to DB, then extract memory facts."""
+    from sqlalchemy import select as _sel
     try:
         async with SessionLocal() as session:
             await _ensure_user_and_conversation(session, user_id, conversation_id)
@@ -155,26 +181,13 @@ async def _save_messages(
                 content=user_text,
             ))
 
-            # Extract assistant text
-            assistant_text = ""
+            # Unpack assistant text
             if isinstance(assistant_payload, str):
                 assistant_text = assistant_payload
             elif isinstance(assistant_payload, bytes):
-                # Parse SSE: data: {"choices":[{"delta":{"content":"..."}}]}
-                for line in assistant_payload.decode("utf-8", errors="ignore").splitlines():
-                    line = line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data_str = line[5:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        data = _json.loads(data_str)
-                        token = data["choices"][0]["delta"].get("content", "")
-                        if token:
-                            assistant_text += token
-                    except Exception:
-                        continue
+                assistant_text = _parse_sse_text(assistant_payload)
+            else:
+                assistant_text = ""
 
             if assistant_text:
                 session.add(DBMessage(
@@ -184,8 +197,7 @@ async def _save_messages(
                     content=assistant_text,
                 ))
 
-            # Auto-title: set on first message (if no title yet)
-            from sqlalchemy import select as _sel
+            # Auto-title from first user message
             conv = (await session.execute(
                 _sel(Conversation).where(Conversation.id == conversation_id)
             )).scalar_one_or_none()
@@ -193,8 +205,31 @@ async def _save_messages(
                 conv.title = user_text[:80]
 
             await session.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("_save_messages failed: %s", e)
+        return
+
+    # Extract and store memory facts (separate session, non-blocking)
+    if assistant_text and settings:
+        try:
+            from app.db.repositories.memory_repo import MemoryRepository
+            from app.services.embedding_service import EmbeddingService
+            async with SessionLocal() as mem_session:
+                _settings = settings or get_settings()
+                mws = MWSClient(_settings)
+                embedder = EmbeddingService(mws, _settings)
+                repo = MemoryRepository(mem_session)
+                extractor = MemoryExtractor(mws, embedder, repo, _settings)
+                facts = await extractor.extract_and_store(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    user_msg=user_text,
+                    assistant_msg=assistant_text,
+                )
+                if facts:
+                    _log.debug("Extracted %d memory facts for user=%s", len(facts), user_id)
+        except Exception as e:
+            _log.warning("Memory extraction failed for user=%s: %s", user_id, e)
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -266,10 +301,10 @@ async def chat_completions(
                 async for chunk in mws.stream_chat(request):
                     collected.append(chunk)
                     yield chunk
-                # Save after stream ends (fire & forget)
+                # Save history + extract memory (fire & forget)
                 if conversation_id:
                     asyncio.create_task(
-                        _save_messages(user_id, conversation_id, message_text, b"".join(collected))
+                        _save_messages(user_id, conversation_id, message_text, b"".join(collected), settings)
                     )
 
             return StreamingResponse(
@@ -279,7 +314,7 @@ async def chat_completions(
             )
 
         response = await mws.chat(request)
-        # Save to history (fire & forget)
+        # Save history + extract memory (fire & forget)
         if conversation_id:
             assistant_text = ""
             try:
@@ -287,7 +322,7 @@ async def chat_completions(
             except Exception:
                 pass
             asyncio.create_task(
-                _save_messages(user_id, conversation_id, message_text, assistant_text)
+                _save_messages(user_id, conversation_id, message_text, assistant_text, settings)
             )
         return JSONResponse(content=response)
 
