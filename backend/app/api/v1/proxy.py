@@ -25,7 +25,7 @@ _log = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.db.database import get_session
+from app.db.database import get_session, SessionLocal
 from app.db.models import RouterLog
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
 from app.services.cascade_router import CascadeRouter, get_cascade_router
@@ -97,26 +97,26 @@ async def _inject_rag(
 
 
 async def _log_route(
-    session: AsyncSession,
     user_id: str,
     message: str,
     route: RouteResult,
     latency_ms: int,
 ) -> None:
     try:
-        log = RouterLog(
-            id=str(uuid.uuid4()),
-            user_id=user_id,
-            message_preview=message[:512],
-            task_type=route.task_type,
-            model_id=route.model_id,
-            confidence=route.confidence,
-            latency_ms=latency_ms,
-        )
-        session.add(log)
-        await session.commit()
+        async with SessionLocal() as session:
+            log = RouterLog(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                message_preview=message[:512],
+                task_type=route.task_type,
+                model_id=route.model_id,
+                confidence=route.confidence,
+                latency_ms=latency_ms,
+            )
+            session.add(log)
+            await session.commit()
     except Exception:
-        await session.rollback()
+        pass
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ async def chat_completions(
 
     # 6. Log route decision (fire & forget)
     asyncio.create_task(
-        _log_route(session, user_id, message_text, route, latency_ms)
+        _log_route(user_id, message_text, route, latency_ms)
     )
 
     # 7. Forward to MWS

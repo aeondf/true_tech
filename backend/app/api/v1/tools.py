@@ -15,8 +15,6 @@ from app.services.mws_client import MWSClient, get_mws_client
 from app.config import Settings, get_settings
 
 router = APIRouter()
-_search = WebSearchService()
-_parser = WebParserService()
 
 
 class SearchRequest(BaseModel):
@@ -38,14 +36,16 @@ class PptxRequest(BaseModel):
 @router.post("/web-search")
 async def web_search(req: SearchRequest):
     """DuckDuckGo search → list of {title, url, snippet}."""
-    results = await _search.search(req.query, max_results=req.max_results)
+    svc = WebSearchService()
+    results = await svc.search(req.query, max_results=req.max_results)
     return {"results": results}
 
 
 @router.post("/web-parse")
 async def web_parse(req: ParseRequest):
     """Fetch URL → extract clean text (+ optional links)."""
-    result = await _parser.parse(str(req.url), extract_links=req.extract_links)
+    svc = WebParserService()
+    result = await svc.parse(str(req.url), extract_links=req.extract_links)
     return result
 
 
