@@ -25,10 +25,11 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import bcrypt as _bcrypt
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,7 +41,6 @@ from app.services.mws_client import MWSClient, get_mws_client
 _log = logging.getLogger(__name__)
 
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 ALGORITHM = "HS256"
 
@@ -48,11 +48,14 @@ ALGORITHM = "HS256"
 # ── Helpers ───────────────────────────────────────────────────────
 
 def _hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return _bcrypt.checkpw(plain.encode(), hashed.encode())
+    except Exception:
+        return False
 
 
 def _create_token(user_id: str, email: str, settings: Settings) -> str:
@@ -239,6 +242,17 @@ async def delete_conversation(user_id: str, conv_id: str):
 
 # ── Memory ────────────────────────────────────────────────────────
 
+@router.post("/memory/extract", status_code=202)
+async def extract_memory(
+    body: MemoryExtractRequest,
+    mws: MWSClient = Depends(get_mws_client),
+    settings: Settings = Depends(get_settings),
+):
+    """Fire-and-forget: extract facts from assistant response and save to memory."""
+    asyncio.create_task(_extract_and_save(body.user_id, body.assistant_message, mws, settings))
+    return {"status": "accepted"}
+
+
 @router.get("/memory/{user_id}")
 async def get_memory(user_id: str):
     async with SessionLocal() as session:
@@ -302,17 +316,6 @@ async def delete_memory(user_id: str, key: str):
             )
         )
         await session.commit()
-
-
-@router.post("/memory/extract", status_code=202)
-async def extract_memory(
-    body: MemoryExtractRequest,
-    mws: MWSClient = Depends(get_mws_client),
-    settings: Settings = Depends(get_settings),
-):
-    """Fire-and-forget: extract facts from assistant response and save to memory."""
-    asyncio.create_task(_extract_and_save(body.user_id, body.assistant_message, mws, settings))
-    return {"status": "accepted"}
 
 
 async def _extract_and_save(user_id: str, message: str, mws: MWSClient, settings: Settings) -> None:

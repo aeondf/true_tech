@@ -368,35 +368,41 @@ class TestAuthEndpoints:
         app.include_router(router, prefix="/v1")
         return TestClient(app)
 
+    def _make_session_ctx(self, session):
+        """Создаёт мок для `async with SessionLocal() as session`."""
+        mock_sl = MagicMock()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=session)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_sl.return_value = ctx
+        return mock_sl
+
     def test_register_success(self):
+        """
+        Тестируем register через полный стек:
+        - scalar() возвращает None (email свободен)
+        - session.add + commit вызываются
+        - ответ содержит token
+        Класс User НЕ мокаем — иначе select(User) сломается в SQLAlchemy.
+        Вместо этого позволяем создать реальный объект User, перехватываем add().
+        """
         client = self._client()
-        mock_user = MagicMock()
-        mock_user.id = str(uuid.uuid4())
-        mock_user.email = "test@test.com"
+        session = AsyncMock()
+        session.scalar.return_value = None   # email не занят
+        added_objects = []
+        session.add = lambda obj: added_objects.append(obj)
+        session.commit = AsyncMock()
 
-        with patch("app.api.v1.auth_history.SessionLocal") as mock_sl:
-            session = AsyncMock()
-            session.scalar.return_value = None   # email не занят
-            session.add = MagicMock()
-            session.commit = AsyncMock()
-            ctx = AsyncMock()
-            ctx.__aenter__ = AsyncMock(return_value=session)
-            ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_sl.return_value = ctx
-
-            with patch("app.api.v1.auth_history._hash_password", return_value="hashed"):
-                with patch("app.api.v1.auth_history._create_token", return_value="tok123"):
-                    # Патчим User чтобы .id и .email были доступны
-                    with patch("app.api.v1.auth_history.User") as MockUser:
-                        instance = MagicMock()
-                        instance.id = "uid-1"
-                        instance.email = "test@test.com"
-                        MockUser.return_value = instance
-                        r = client.post("/v1/auth/register",
-                                        json={"email": "test@test.com", "password": "pass"})
+        with patch("app.api.v1.auth_history.SessionLocal", self._make_session_ctx(session)):
+            with patch("app.api.v1.auth_history._create_token", return_value="tok123"):
+                r = client.post("/v1/auth/register",
+                                json={"email": "test@test.com", "password": "pass"})
 
         assert r.status_code == 200
-        assert "token" in r.json()
+        body = r.json()
+        assert body["token"] == "tok123"
+        assert body["email"] == "test@test.com"
+        assert len(added_objects) == 1  # User был добавлен в сессию
 
     def test_login_wrong_password(self):
         client = self._client()
@@ -602,21 +608,24 @@ class TestMemoryEndpoints:
         assert facts[0]["value"] == "Python"
 
     def test_upsert_memory_new(self):
+        """Новая запись памяти — scalar() == None → session.add вызывается."""
         client = self._client()
         session = AsyncMock()
         session.scalar.return_value = None  # не существует
-        session.add = MagicMock()
+        added = []
+        session.add = lambda obj: added.append(obj)
         session.commit = AsyncMock()
 
+        # НЕ мокаем UserMemory — select(UserMemory) сломается
         with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            with patch("app.api.v1.auth_history.UserMemory"):
-                r = client.post(
-                    "/v1/memory/user-1",
-                    json={"key": "фреймворк", "value": "FastAPI", "category": "preferences"},
-                )
+            r = client.post(
+                "/v1/memory/user-1",
+                json={"key": "фреймворк", "value": "FastAPI", "category": "preferences"},
+            )
 
         assert r.status_code == 201
         assert r.json()["status"] == "ok"
+        assert len(added) == 1  # UserMemory объект добавлен
 
     def test_upsert_memory_update_existing(self):
         client = self._client()
@@ -645,8 +654,23 @@ class TestMemoryEndpoints:
         assert r.status_code == 204
 
     def test_memory_extract_accepted(self):
-        """POST /memory/extract всегда возвращает 202."""
-        client = self._client()
+        """POST /memory/extract всегда возвращает 202. Зависимости переопределены."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.v1.auth_history import router
+        from app.services.mws_client import get_mws_client
+        from app.config import get_settings, Settings
+
+        app = FastAPI()
+        app.include_router(router, prefix="/v1")
+
+        # Переопределяем FastAPI-зависимости
+        mock_mws = MagicMock()
+        mock_settings = Settings(MWS_API_KEY="test", MWS_BASE_URL="http://localhost")
+        app.dependency_overrides[get_mws_client] = lambda: mock_mws
+        app.dependency_overrides[get_settings] = lambda: mock_settings
+
+        client = TestClient(app)
         with patch("app.api.v1.auth_history.asyncio.create_task"):
             r = client.post(
                 "/v1/memory/extract",
