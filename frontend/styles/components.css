@@ -1,0 +1,75 @@
+/* ══ COMPONENTS — shared: buttons, toasts, dropdowns, scrollbars, modals, misc ══ */
+
+/* ══ RIPPLE ══ */
+.rh{position:relative;overflow:hidden;}
+.rp{
+  position:absolute;border-radius:50%;background:rgba(255,255,255,.13);
+  pointer-events:none;transform:scale(0);animation:rpAnim .55s ease-out forwards;
+}
+@keyframes rpAnim{to{transform:scale(4);opacity:0}}
+
+/* ══ TOAST ══ */
+#toastRoot{position:fixed;bottom:24px;right:24px;z-index:9998;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
+.toast{
+  display:flex;align-items:center;gap:9px;padding:10px 15px;
+  background:var(--onyx);border:1px solid var(--border);border-radius:12px;
+  font-size:12.5px;color:var(--tx);min-width:200px;max-width:320px;
+  box-shadow:0 8px 28px rgba(0,0,0,.55);pointer-events:all;
+  animation:toastIn .3s cubic-bezier(.34,1.56,.64,1) forwards;
+}
+.toast.out{animation:toastOut .25s ease forwards;}
+.toast-ic{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;}
+.toast-ic.ok{background:rgba(34,197,94,.15);}
+.toast-ic.ok svg{stroke:#22C55E;}
+.toast-ic.inf{background:rgba(99,102,241,.15);}
+.toast-ic.inf svg{stroke:#818CF8;}
+.toast-ic.err{background:rgba(232,0,28,.15);}
+.toast-ic.err svg{stroke:var(--red);}
+@keyframes toastIn{from{opacity:0;transform:translateX(20px) scale(.94)}to{opacity:1;transform:none}}
+@keyframes toastOut{to{opacity:0;transform:translateX(20px) scale(.94)}}
+
+/* ══ DROPDOWN (model picker) ══ */
+.m-dd{
+  position:absolute;bottom:calc(100% + 8px);right:0;background:var(--onyx);
+  border:1px solid var(--border);border-radius:12px;overflow:hidden;z-index:9000;
+  min-width:240px;max-width:280px;box-shadow:0 -10px 32px rgba(0,0,0,.7);
+  display:none;
+}
+.m-dd.open{display:flex;flex-direction:column;animation:popUp .18s cubic-bezier(.34,1.56,.64,1);}
+@keyframes popUp{from{opacity:0;transform:translateY(7px) scale(.96)}to{opacity:1;transform:none}}
+.dd-search-wrap{padding:8px 10px 6px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.dd-search{
+  width:100%;background:var(--s2);border:1px solid var(--border);border-radius:7px;
+  color:var(--tx);font-size:12px;padding:6px 10px;outline:none;font-family:inherit;
+  transition:border-color .2s;
+}
+.dd-search:focus{border-color:var(--dim);}
+.dd-list{overflow-y:auto;max-height:280px;overscroll-behavior:contain;}
+.dd-list::-webkit-scrollbar{width:4px;}
+.dd-list::-webkit-scrollbar-track{background:transparent;}
+.dd-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.dd-hdr{padding:8px 13px 3px;font-size:10px;font-weight:700;letter-spacing:.8px;color:var(--dim);text-transform:uppercase;}
+.dd-opt{
+  display:flex;align-items:center;gap:9px;padding:8px 13px;
+  cursor:pointer;color:var(--tx);transition:background .1s,transform .12s;
+  position:relative;overflow:hidden;
+}
+.dd-opt:hover{background:var(--s2);transform:translateX(2px);}
+.dd-opt.sel{background:var(--red-dim);}
+.dd-opt.hidden{display:none;}
+.dd-ico{
+  width:24px;height:24px;border-radius:6px;background:var(--s2);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  transition:transform .2s cubic-bezier(.34,1.56,.64,1);
+}
+.dd-opt:hover .dd-ico{transform:scale(1.12);}
+.dd-info{flex:1;min-width:0;}
+.dd-nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dd-sb{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dd-chk{color:var(--red);font-size:12px;flex-shrink:0;}
+.dd-sep{height:1px;background:var(--border);margin:3px 0;}
+.dd-empty{padding:14px 13px;font-size:12px;color:var(--dim);text-align:center;}
+
+/* ══ OVERLAY (for closing dropdowns) ══ */
+.ov{position:fixed;inset:0;z-index:300;display:none;}
+.ov.on{display:block;}
