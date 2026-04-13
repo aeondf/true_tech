@@ -1553,6 +1553,82 @@ let selectedModelName = 'Авто';   // display name
 // Map<chipElement, File>  — keeps File objects for upload
 const chipFileMap = new WeakMap();
 
+// ── Auth state ────────────────────────────────
+let authToken = localStorage.getItem('mts-token') || null;
+let userMemory = [];   // [{key, value, category, score}]
+
+function authHeaders() {
+  return authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
+}
+
+// ── Auth API ──────────────────────────────────
+async function apiAuthRegister(email, password) {
+  const r = await fetch(`${API}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || 'Ошибка регистрации');
+  }
+  return r.json();
+}
+
+async function apiAuthLogin(email, password) {
+  const r = await fetch(`${API}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || 'Неверный email или пароль');
+  }
+  return r.json();
+}
+
+// ── Memory API ────────────────────────────────
+async function loadMemory() {
+  if (!currentUserId) return;
+  try {
+    const r = await fetch(`${API}/memory/${currentUserId}`, { headers: authHeaders() });
+    if (r.ok) {
+      const d = await r.json();
+      userMemory = d.memories || [];
+    }
+  } catch {}
+}
+
+function buildMemoryBlock() {
+  if (!userMemory.length) return null;
+  const top = userMemory.slice(0, 10);
+  return 'Факты о пользователе:\n' + top.map(m => `- ${m.key}: ${m.value}`).join('\n');
+}
+
+function fireExtractMemory(assistantText) {
+  if (!currentUserId || !assistantText || assistantText.length < 30) return;
+  fetch(`${API}/memory/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({
+      user_id: currentUserId,
+      conv_id: currentConvId,
+      assistant_message: assistantText,
+    }),
+  }).catch(() => {});
+}
+
+// ── History save ──────────────────────────────
+function fireSaveMessage(role, content, modelUsed) {
+  if (!currentUserId || !currentConvId) return;
+  fetch(`${API}/history/${currentUserId}/${currentConvId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ role, content, model_used: modelUsed || null }),
+  }).catch(() => {});
+}
+
 function uuid(){
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{
     const r = Math.random()*16|0;
@@ -2291,19 +2367,24 @@ async function doSend(src){
   if(currentAgent?.id==='imagegen'){     typing.remove(); await doImageGen(txt,ci);     return; }
   if(currentAgent?.id==='websearch'){    typing.remove(); await doWebSearch(txt,ci);    return; }
 
+  // Save user message (fire-and-forget)
+  fireSaveMessage('user', txt, null);
+
   isStreaming=true;
   try {
+    const memBlock = buildMemoryBlock();
     const body={
       model: selectedModel,
       messages: [...currentMessages],
       stream: true,
       user: currentUserId||'anonymous',
-      conversation_id: currentConvId
+      conversation_id: currentConvId,
+      ...(memBlock && { system_prompt: memBlock }),
     };
     if(attachments.length) body.attachments=attachments;
 
     const resp=await fetch(`${API}/chat/completions`,{
-      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+      method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body:JSON.stringify(body)
     });
     if(!resp.ok){
       const err=await resp.json().catch(()=>({}));
@@ -2370,6 +2451,9 @@ async function doSend(src){
     }
 
     currentMessages.push({role:'assistant',content:full});
+    // Save assistant message + trigger memory extraction (fire-and-forget)
+    fireSaveMessage('assistant', full, usedModelId || (selectedModel !== 'auto' ? selectedModel : null));
+    fireExtractMemory(full);
     setTimeout(()=>loadHistory(),800);
   } catch(e){
     document.getElementById('typing')?.remove();
@@ -2740,19 +2824,48 @@ function authSubmitCode(){
   const pwd=document.getElementById('authPassword').value;
   if(!pwd){ const inp=document.getElementById('authPassword'); inp.style.borderColor='var(--red)'; inp.focus(); setTimeout(()=>inp.style.borderColor='',1200); return; }
   const btn=document.getElementById('authCodeBtn');
-  btn.textContent='✓ Входим...'; btn.disabled=true;
-  currentUserId=authEmailVal.toLowerCase().replace(/[^a-z0-9]/g,'_').slice(0,50);
-  localStorage.setItem('mts-user-id', currentUserId);
-  localStorage.setItem('mts-user-email', authEmailVal);
-  document.getElementById('profInpEmail').value=authEmailVal;
-  // Обновляем имя в сайдбаре
-  const nameFromEmail = authEmailVal.split('@')[0];
-  document.getElementById('sbUserName').textContent=nameFromEmail;
-  document.getElementById('sbAvatar').textContent=getInitials(nameFromEmail);
-  setTimeout(()=>{
-    document.getElementById('authScreen').classList.add('out');
-    setTimeout(()=>{ document.getElementById('authScreen').style.display='none'; initSplash(); },680);
-  },600);
+  btn.textContent='Входим...'; btn.disabled=true;
+
+  const doLogin = () => apiAuthLogin(authEmailVal, pwd)
+    .then(d => {
+      authToken = d.token;
+      currentUserId = d.user_id;
+      localStorage.setItem('mts-token', authToken);
+      localStorage.setItem('mts-user-id', currentUserId);
+      localStorage.setItem('mts-user-email', d.email);
+      document.getElementById('profInpEmail').value = d.email;
+      const nameFromEmail = d.email.split('@')[0];
+      document.getElementById('sbUserName').textContent = nameFromEmail;
+      document.getElementById('sbAvatar').textContent = getInitials(nameFromEmail);
+      document.getElementById('authScreen').classList.add('out');
+      setTimeout(() => { document.getElementById('authScreen').style.display='none'; initSplash(); }, 680);
+    })
+    .catch(() => {
+      // На ошибку — пробуем зарегистрировать (новый пользователь)
+      return apiAuthRegister(authEmailVal, pwd)
+        .then(d => {
+          authToken = d.token;
+          currentUserId = d.user_id;
+          localStorage.setItem('mts-token', authToken);
+          localStorage.setItem('mts-user-id', currentUserId);
+          localStorage.setItem('mts-user-email', d.email);
+          document.getElementById('profInpEmail').value = d.email;
+          const nameFromEmail = d.email.split('@')[0];
+          document.getElementById('sbUserName').textContent = nameFromEmail;
+          document.getElementById('sbAvatar').textContent = getInitials(nameFromEmail);
+          document.getElementById('authScreen').classList.add('out');
+          setTimeout(() => { document.getElementById('authScreen').style.display='none'; initSplash(); }, 680);
+        })
+        .catch(regErr => {
+          btn.textContent='Войти'; btn.disabled=false;
+          const inp=document.getElementById('authPassword');
+          inp.style.borderColor='var(--red)'; inp.focus();
+          setTimeout(()=>inp.style.borderColor='',1800);
+          toast(regErr.message || 'Ошибка входа', 'err', 3000);
+        });
+    });
+
+  doLogin();
 }
 
 function initSplash(){
@@ -2765,9 +2878,10 @@ function initSplash(){
   setTimeout(()=>{ document.getElementById('splash')?.classList.add('out'); document.getElementById('appRoot')?.classList.add('vis'); },2900);
   setTimeout(()=>{
     document.getElementById('splash')?.remove();
-    // После анимации: загружаем модели и историю, проверяем бэкенд
+    // После анимации: загружаем модели, историю, память
     fetchModels();
     loadHistory();
+    loadMemory();
     checkHealth();
     currentConvId=uuid();
   },3600);
@@ -2841,8 +2955,11 @@ function savePlan(){
 }
 function logoutProfile(){
   closeProfile();
+  authToken = null;
+  localStorage.removeItem('mts-token');
   localStorage.removeItem('mts-user-id');
   localStorage.removeItem('mts-user-email');
+  userMemory = [];
   setTimeout(()=>{
     const auth=document.getElementById('authScreen');
     if(auth){
@@ -2871,11 +2988,13 @@ function logoutProfile(){
   if(l!=='ru') applyLang(l);
   buildDD('mDDH'); buildDD('mDDB');
 
-  // Проверяем сохранённую сессию — пропускаем экран авторизации
-  const savedId    = localStorage.getItem('mts-user-id');
+  // Auto-login: если токен уже есть в localStorage — пропускаем authScreen
+  const savedToken = localStorage.getItem('mts-token');
+  const savedUserId = localStorage.getItem('mts-user-id');
   const savedEmail = localStorage.getItem('mts-user-email');
-  if(savedId){
-    currentUserId = savedId;
+  if(savedToken && savedUserId){
+    authToken = savedToken;
+    currentUserId = savedUserId;
     if(savedEmail){
       document.getElementById('profInpEmail').value = savedEmail;
       const nameFromEmail = savedEmail.split('@')[0];

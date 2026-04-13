@@ -17,6 +17,9 @@ class ChatCompletionRequest(BaseModel):
     frequency_penalty: float | None = None
     stream: bool = False
     user: str | None = None
+    # Extended fields — not forwarded to MWS, consumed by proxy
+    system_prompt: str | None = None       # memory block injected as system message
+    conversation_id: str | None = None     # for history persistence
 
 
 class CompletionRequest(BaseModel):
