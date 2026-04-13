@@ -4,6 +4,7 @@ FROM nginx:alpine
 COPY index.html /usr/share/nginx/html/index.html
 COPY brain.svg  /usr/share/nginx/html/brain.svg
 COPY logo.svg   /usr/share/nginx/html/logo.svg
+COPY js/        /usr/share/nginx/html/js/
 
 # nginx config: serve on port 80, proxy /v1/* to backend
 COPY nginx.conf /etc/nginx/conf.d/default.conf
