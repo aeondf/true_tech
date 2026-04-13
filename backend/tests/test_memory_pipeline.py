@@ -29,6 +29,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+pytestmark = [pytest.mark.live, pytest.mark.slow]
+
 from app.config import Settings
 from app.models.mws import ChatCompletionRequest, Message
 from app.services.mws_client import MWSClient

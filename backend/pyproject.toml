@@ -2,6 +2,10 @@
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "live: hits external services or real network dependencies",
+    "slow: long-running tests",
+]
 
 [tool.ruff]
 line-length = 100

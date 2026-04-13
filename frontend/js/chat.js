@@ -55,6 +55,85 @@ function updateMsgModel(el, modelId){
   if(badgeEl)  badgeEl.textContent=name;
 }
 
+function buildResearchMetaSection(sources, subQueries, stats){
+  const safeSources = Array.isArray(sources) ? sources : [];
+  const safeQueries = Array.isArray(subQueries) ? subQueries : [];
+  const safeStats = stats && typeof stats === 'object' ? stats : null;
+  if(!safeSources.length && !safeQueries.length && !safeStats) return null;
+
+  const wrap=document.createElement('div');
+  wrap.style.cssText='margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px';
+
+  if(safeQueries.length){
+    const queries=document.createElement('div');
+    queries.style.cssText='display:flex;flex-wrap:wrap;gap:6px';
+    safeQueries.forEach(q=>{
+      const chip=document.createElement('span');
+      chip.style.cssText='font-size:11px;padding:3px 8px;border-radius:999px;background:var(--s2);border:1px solid var(--border);color:var(--muted)';
+      chip.textContent=q;
+      queries.appendChild(chip);
+    });
+    wrap.appendChild(queries);
+  }
+
+  if(safeSources.length){
+    const title=document.createElement('div');
+    title.style.cssText='font-size:12px;font-weight:600;color:var(--muted)';
+    title.textContent='Источники';
+    wrap.appendChild(title);
+
+    const list=document.createElement('div');
+    list.style.cssText='display:flex;flex-direction:column;gap:6px';
+    safeSources.forEach(source=>{
+      const item=document.createElement('a');
+      item.href=source.url||'#';
+      item.target='_blank';
+      item.rel='noreferrer';
+      item.style.cssText='padding:8px 10px;border-radius:10px;background:var(--s2);border:1px solid var(--border);text-decoration:none;color:inherit;display:block';
+      item.innerHTML=`<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><strong style="font-size:12px">${esc(source.title||source.url||'Источник')}</strong><span style="font-size:10px;color:var(--red)">${esc(source.source_id||'')}</span></div><div style="font-size:11px;color:var(--muted);margin-top:3px">${esc(source.excerpt||source.snippet||'')}</div><div style="font-size:10px;color:var(--dim);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(source.url||'')}</div>`;
+      list.appendChild(item);
+    });
+    wrap.appendChild(list);
+  }
+
+  if(safeStats){
+    const statsEl=document.createElement('div');
+    statsEl.style.cssText='font-size:11px;color:var(--dim)';
+    const parts=[];
+    if(Number.isFinite(safeStats.pages_fetched)) parts.push(`источников собрано: ${safeStats.pages_fetched}`);
+    if(Number.isFinite(safeStats.sources_used)) parts.push(`использовано: ${safeStats.sources_used}`);
+    if(Number.isFinite(safeStats.queries_completed) && Number.isFinite(safeStats.queries_total)) parts.push(`запросов: ${safeStats.queries_completed}/${safeStats.queries_total}`);
+    if(safeStats.timed_out) parts.push('достигнут лимит времени');
+    statsEl.textContent=parts.join(' • ');
+    if(statsEl.textContent) wrap.appendChild(statsEl);
+  }
+
+  return wrap;
+}
+
+function appendResearchMeta(container, sources, subQueries, stats){
+  if(!container) return;
+  const section = buildResearchMetaSection(sources, subQueries, stats);
+  if(section) container.appendChild(section);
+}
+
+function formatResearchProgress(data){
+  if(data?.message) return data.message;
+  if(Array.isArray(data?.sub_queries) && data.sub_queries.length){
+    return data.sub_queries.slice(0,4).join(' • ');
+  }
+  if(data?.query){
+    const completed = Number.isFinite(data.queries_completed) ? data.queries_completed : 0;
+    const total = Number.isFinite(data.queries_total) ? data.queries_total : '?';
+    const sourcesTotal = Number.isFinite(data.sources_total) ? data.sources_total : 0;
+    return `${data.query} (${completed}/${total}), источников: ${sourcesTotal}`;
+  }
+  if(Number.isFinite(data?.pages_fetched)){
+    return `источников собрано ${data.pages_fetched}${data.timed_out ? ' • достигнут лимит времени' : ''}`;
+  }
+  return '';
+}
+
 async function doSend(src){
   if(isStreaming) return;
   const ta=src==='hero'?document.getElementById('inpHero'):document.getElementById('inpBot');
@@ -194,6 +273,7 @@ async function doSend(src){
             || data.error
             || 'Ответ получен';
         const aiEl=appendMsg('ai',full,true,usedModelId);
+        appendResearchMeta(aiEl.querySelector('.msg-bbl'), data.sources, data.sub_queries, data.stats);
         aiEl.querySelector('.copyBtn').onclick=()=>{ navigator.clipboard.writeText(full).then(()=>toast('Скопировано','ok',1500)); };
       }
     } else {
@@ -202,6 +282,7 @@ async function doSend(src){
       let buf='';
       const reader=resp.body.getReader();
       const dec=new TextDecoder();
+      let researchStream=false;
       while(true){
         const {done,value}=await reader.read();
         if(done) break;
@@ -210,9 +291,41 @@ async function doSend(src){
         for(const line of lines){
           if(!line.startsWith('data:')) continue;
           const data=line.slice(5).trim();
-          if(data==='[DONE]') break;
+          if(data==='[DONE]') continue;
           try {
             const json=JSON.parse(data);
+            if(json.research_event==='progress'){
+              researchStream=true;
+              const msg=formatResearchProgress(json);
+              if(msg){
+                const div=document.createElement('div');
+                div.style.cssText='color:var(--muted);font-size:12.5px;margin:3px 0';
+                div.textContent=(json.step?`Шаг ${json.step}: `:'')+msg;
+                bbl.appendChild(div);
+                scrollBot();
+              }
+              continue;
+            }
+            if(json.research_event==='done'){
+              researchStream=true;
+              usedModelId=json.model||usedModelId||'deep_research';
+              updateMsgModel(aiEl,usedModelId);
+              full=json.answer||json.choices?.[0]?.delta?.content||full;
+              bbl.innerHTML=renderMd(full);
+              appendResearchMeta(bbl, json.sources, json.sub_queries, json.stats);
+              scrollBot();
+              continue;
+            }
+            if(json.research_event==='error'){
+              researchStream=true;
+              const message=json.error?.message||json.message||'Ошибка исследования';
+              full='';
+              bbl.innerHTML=`<span style="color:var(--red)">Error: ${esc(message)}</span>`;
+              appendResearchMeta(bbl, json.sources, json.sub_queries, json.stats);
+              toast(`Deep Research: ${message}`,'err',4000);
+              scrollBot();
+              continue;
+            }
             if(json.model && json.model!=='auto' && !usedModelId){
               usedModelId=json.model; updateMsgModel(aiEl,usedModelId);
             }
@@ -221,14 +334,16 @@ async function doSend(src){
           } catch {}
         }
       }
-      if(!usedModelId && selectedModel!=='auto') updateMsgModel(aiEl, selectedModel);
+      if(!usedModelId && selectedModel!=='auto' && !researchStream) updateMsgModel(aiEl, selectedModel);
       aiEl.querySelector('.copyBtn').onclick=()=>{ navigator.clipboard.writeText(full).then(()=>toast('Скопировано','ok',1500)); };
     }
 
-    currentMessages.push({role:'assistant',content:full});
-    if(isHistoryEnabled()) fireSaveMessage('assistant', full, usedModelId || (selectedModel !== 'auto' ? selectedModel : null));
-    queueMemorySync(txt, full);
-    setTimeout(()=>loadHistory(),800);
+    if(full){
+      currentMessages.push({role:'assistant',content:full});
+      if(isHistoryEnabled()) fireSaveMessage('assistant', full, usedModelId || (selectedModel !== 'auto' ? selectedModel : null));
+      queueMemorySync(txt, full);
+      setTimeout(()=>loadHistory(),800);
+    }
   } catch(e){
     document.getElementById('typing')?.remove();
     if(e.name!=='AbortError'){
@@ -296,14 +411,23 @@ async function sendVoiceMsg(id, chips, textContext){
   } finally { isStreaming=false; }
 }
 
-async function doDeepResearch(query,ci){
-  isStreaming=true;
+async function doDeepResearchLegacy(query,ci){
+  isStreaming=true; setSendStop(true);
+  abortCtrl=new AbortController();
   const el=document.createElement('div'); el.className='msg';
   el.innerHTML=`<div class="msg-av ai">AI</div><div class="msg-body"><div class="msg-meta"><span class="msg-sender">Deep Research</span><span class="msg-badge">Deep Research</span></div><div class="msg-bbl" id="researchProg" style="line-height:1.75"><div style="color:var(--muted)">🔍 Начинаю исследование...</div></div></div>`;
   ci.appendChild(el); scrollBot();
   const prog=document.getElementById('researchProg');
+  let finalAnswer='';
   try {
-    const resp=await fetch(`${API}/research`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,user_id:currentUserId||'anonymous'})});
+    if(isHistoryEnabled()) fireSaveMessage('user', query, null);
+    const resp=await fetch(`${API}/research`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json', ...authHeaders()},
+      body:JSON.stringify({query,user_id:currentUserId||'anonymous'}),
+      signal: abortCtrl.signal,
+    });
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const reader=resp.body.getReader(); const dec=new TextDecoder();
     let buf=''; let evType='';
     while(true){
@@ -315,9 +439,25 @@ async function doDeepResearch(query,ci){
         else if(line.startsWith('data:')){
           try {
             const data=JSON.parse(line.slice(5).trim());
-            if(evType==='done'){ prog.innerHTML=renderMd(data.answer||'Готово.'); currentMessages.push({role:'assistant',content:data.answer||''}); scrollBot(); }
+            if(evType==='done'){
+              finalAnswer=data.answer||'Готово.';
+              prog.innerHTML=renderMd(finalAnswer);
+              appendResearchMeta(prog, data.sources, data.sub_queries, data.stats);
+              currentMessages.push({role:'assistant',content:finalAnswer});
+              if(isHistoryEnabled()) fireSaveMessage('assistant', finalAnswer, data.model||'deep_research');
+              queueMemorySync(query, finalAnswer);
+              setTimeout(()=>loadHistory(),800);
+              scrollBot();
+            }
+            else if(evType==='error'){
+              const message=data.message||'Ошибка исследования';
+              prog.innerHTML=`<span style="color:var(--red)">⚠ ${esc(message)}</span>`;
+              appendResearchMeta(prog, data.sources, data.sub_queries, data.stats);
+              toast(`Deep Research: ${message}`,'err',4000);
+              scrollBot();
+            }
             else if(evType==='progress'){
-              const msg=data.message||(data.sub_queries?'📋 '+data.sub_queries.slice(0,3).join(', '):data.pages_fetched?`📄 Страниц: ${data.pages_fetched}`:'');
+              const msg=formatResearchProgress(data);
               if(msg){ const div=document.createElement('div'); div.style.cssText='color:var(--muted);font-size:12.5px;margin:3px 0'; div.textContent=(data.step?`Шаг ${data.step}: `:'')+msg; prog.appendChild(div); scrollBot(); }
             }
           } catch {} evType='';
@@ -326,6 +466,109 @@ async function doDeepResearch(query,ci){
     }
   } catch(e){ prog.innerHTML=`<span style="color:var(--red)">⚠ Ошибка: ${esc(e.message)}</span>`; toast('Deep Research: ошибка','err'); }
   finally { isStreaming=false; }
+}
+
+// Override legacy handler with a stable abort-aware implementation.
+async function doDeepResearch(query,ci){
+  isStreaming=true;
+  setSendStop(true);
+  abortCtrl=new AbortController();
+
+  const el=document.createElement('div');
+  el.className='msg';
+  el.innerHTML=`<div class="msg-av ai">AI</div><div class="msg-body"><div class="msg-meta"><span class="msg-sender">Deep Research</span><span class="msg-badge">Deep Research</span></div><div class="msg-bbl" id="researchProg" style="line-height:1.75"><div style="color:var(--muted)">Starting research...</div></div></div>`;
+  ci.appendChild(el);
+  scrollBot();
+
+  const prog=document.getElementById('researchProg');
+  let finalAnswer='';
+  let terminalSeen=false;
+
+  try {
+    if(isHistoryEnabled()) fireSaveMessage('user', query, null);
+
+    const resp=await fetch(`${API}/research`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json', ...authHeaders()},
+      body:JSON.stringify({query,user_id:currentUserId||'anonymous'}),
+      signal: abortCtrl.signal,
+    });
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if(!resp.body) throw new Error('Empty research response');
+
+    const reader=resp.body.getReader();
+    const dec=new TextDecoder();
+    let buf='';
+    let evType='';
+
+    while(true){
+      const {done,value}=await reader.read();
+      if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split('\n');
+      buf=lines.pop()||'';
+
+      for(const line of lines){
+        if(line.startsWith('event:')){
+          evType=line.slice(6).trim();
+          continue;
+        }
+        if(!line.startsWith('data:')) continue;
+
+        try {
+          const data=JSON.parse(line.slice(5).trim());
+          if(evType==='done'){
+            terminalSeen=true;
+            finalAnswer=data.answer||'Research completed.';
+            prog.innerHTML=renderMd(finalAnswer);
+            appendResearchMeta(prog, data.sources, data.sub_queries, data.stats);
+            currentMessages.push({role:'assistant',content:finalAnswer});
+            if(isHistoryEnabled()) fireSaveMessage('assistant', finalAnswer, data.model||'deep_research');
+            queueMemorySync(query, finalAnswer);
+            setTimeout(()=>loadHistory(),800);
+            scrollBot();
+          } else if(evType==='error'){
+            terminalSeen=true;
+            const message=data.message||'Research failed';
+            prog.innerHTML=`<span style="color:var(--red)">Error: ${esc(message)}</span>`;
+            appendResearchMeta(prog, data.sources, data.sub_queries, data.stats);
+            toast(`Deep Research: ${message}`,'err',4000);
+            scrollBot();
+          } else if(evType==='progress'){
+            const msg=formatResearchProgress(data);
+            if(msg){
+              const div=document.createElement('div');
+              div.style.cssText='color:var(--muted);font-size:12.5px;margin:3px 0';
+              div.textContent=(data.step?`Step ${data.step}: `:'')+msg;
+              prog.appendChild(div);
+              scrollBot();
+            }
+          }
+        } catch {}
+
+        evType='';
+      }
+    }
+
+    if(!terminalSeen){
+      prog.innerHTML='<span style="color:var(--red)">Research stopped before a final result.</span>';
+      toast('Deep Research: incomplete response','err',3000);
+      scrollBot();
+    }
+  } catch(e){
+    if(e.name==='AbortError'){
+      prog.innerHTML='<span style="color:var(--muted)">Research stopped.</span>';
+      scrollBot();
+    } else {
+      prog.innerHTML=`<span style="color:var(--red)">Error: ${esc(e.message)}</span>`;
+      toast(`Deep Research: ${e.message}`,'err',4000);
+      scrollBot();
+    }
+  } finally {
+    isStreaming=false;
+    abortCtrl=null;
+    setSendStop(false);
+  }
 }
 
 async function doVlmAnalyze(txt, attachments, ci){

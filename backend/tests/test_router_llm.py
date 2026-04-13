@@ -16,6 +16,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+pytestmark = [pytest.mark.live, pytest.mark.slow]
+
 from app.config import Settings
 from app.services.router_client import RouterClient
 

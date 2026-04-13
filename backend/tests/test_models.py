@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
+pytestmark = [pytest.mark.live, pytest.mark.slow]
+
 BASE_URL = os.getenv("MWS_BASE_URL", "https://api.gpt.mws.ru")
 API_KEY  = os.getenv("MWS_API_KEY", "")
 HEADERS  = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}

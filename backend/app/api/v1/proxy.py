@@ -11,6 +11,7 @@ Pipeline:
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -19,6 +20,8 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 
+from app.api.v1.research import _run_pipeline, run_research
+from app.config import Settings, get_settings
 from app.db.database import SessionLocal
 from app.db.models import RouterLog, UserMemory
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
@@ -139,11 +142,101 @@ def _build_mws_request(request: ChatCompletionRequest, memory_block: str | None 
     })
 
 
+def _is_auto_model_request(request: ChatCompletionRequest) -> bool:
+    return request.model in ("auto", "", None)
+
+
+def _build_research_response(result: dict) -> dict:
+    answer = result.get("answer") or ""
+    return {
+        "id": f"chatcmpl-research-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": result.get("model") or "deep_research",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": answer},
+            "finish_reason": "stop",
+        }],
+        "sources": result.get("sources", []),
+        "sub_queries": result.get("sub_queries", []),
+        "stats": result.get("stats", {}),
+    }
+
+
+def _parse_research_sse(raw_event: str) -> tuple[str, dict]:
+    event_type = ""
+    data: dict = {}
+    for line in raw_event.strip().splitlines():
+        if line.startswith("event:"):
+            event_type = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            try:
+                data = json.loads(line.split(":", 1)[1].strip())
+            except json.JSONDecodeError:
+                data = {}
+    return event_type, data
+
+
+def _research_stream_chunk(payload: dict | str) -> bytes:
+    if payload == "[DONE]":
+        return b"data: [DONE]\n\n"
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+async def _stream_research_as_chat(
+    query: str,
+    mws: MWSClient,
+    settings: Settings,
+):
+    async for raw_event in _run_pipeline(query, mws, settings):
+        event_type, data = _parse_research_sse(raw_event)
+        if event_type == "progress":
+            yield _research_stream_chunk({
+                "research_event": "progress",
+                **data,
+            })
+            continue
+
+        if event_type == "done":
+            answer = data.get("answer") or ""
+            yield _research_stream_chunk({
+                "research_event": "done",
+                "id": f"chatcmpl-research-{uuid.uuid4().hex}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": data.get("model") or "deep_research",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": answer},
+                    "finish_reason": "stop",
+                }],
+                "answer": answer,
+                "sources": data.get("sources", []),
+                "sub_queries": data.get("sub_queries", []),
+                "stats": data.get("stats", {}),
+            })
+            continue
+
+        if event_type == "error":
+            yield _research_stream_chunk({
+                "research_event": "error",
+                "model": data.get("model") or "deep_research",
+                "error": {"message": data.get("message") or "Research failed"},
+                "sources": data.get("sources", []),
+                "sub_queries": data.get("sub_queries", []),
+                "stats": data.get("stats", {}),
+            })
+
+    yield _research_stream_chunk("[DONE]")
+
+
 @router.post("/chat/completions")
 async def chat_completions(
     request: ChatCompletionRequest,
     mws: MWSClient = Depends(get_mws_client),
     router_client: RouterClient = Depends(get_router_client),
+    settings: Settings = Depends(get_settings),
 ):
     t0 = time.monotonic()
     attachments: list[dict] = []
@@ -152,11 +245,27 @@ async def chat_completions(
     latency_ms = int((time.monotonic() - t0) * 1000)
 
     user_id = getattr(request, "user", "anonymous") or "anonymous"
+    auto_model_requested = _is_auto_model_request(request)
 
-    if request.model in ("auto", "", None):
+    if auto_model_requested:
         request = request.model_copy(update={"model": route.model_id})
 
     asyncio.create_task(_log_route(user_id, message_text, route, latency_ms))
+
+    if route.task_type == "deep_research" and auto_model_requested:
+        if request.stream:
+            return StreamingResponse(
+                _stream_research_as_chat(message_text, mws, settings),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        result = await run_research(message_text, mws, settings)
+        if result["status"] != "ok":
+            return JSONResponse(
+                status_code=504,
+                content={"error": {"message": result["message"]}},
+            )
+        return JSONResponse(content=_build_research_response(result))
 
     memory_block = None
     if request.use_memory:
