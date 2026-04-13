@@ -80,6 +80,12 @@ class MessageSaveRequest(BaseModel):
     model_used: str | None = None
 
 
+class ChangePasswordRequest(BaseModel):
+    user_id: str
+    current_password: str
+    new_password: str
+
+
 class MemoryUpsertRequest(BaseModel):
     key: str
     value: str
@@ -131,6 +137,22 @@ async def login(
 
         token = _create_token(user.id, user.email, settings)
         return {"user_id": user.id, "email": user.email, "token": token}
+
+
+@router.put("/auth/password")
+async def change_password(body: ChangePasswordRequest):
+    if len(body.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Минимум 6 символов")
+    async with SessionLocal() as session:
+        user = await session.scalar(select(User).where(User.id == body.user_id))
+        if not user or not _verify_password(body.current_password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Неверный текущий пароль")
+        await session.execute(
+            update(User).where(User.id == body.user_id)
+            .values(password_hash=_hash_password(body.new_password))
+        )
+        await session.commit()
+    return {"status": "ok"}
 
 
 @router.get("/auth/me")

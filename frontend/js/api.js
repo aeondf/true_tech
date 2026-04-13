@@ -1,19 +1,16 @@
-// ══════════════════════════════════════════════
-//  api.js — base URL + auth headers
-// ══════════════════════════════════════════════
+// ══ API — const API, authHeaders(), apiAuthRegister(), apiAuthLogin(),
+//          loadMemory(), buildMemoryBlock(), fireExtractMemory(), fireSaveMessage() ══
 
-// Relative URL: works both locally and in Docker (nginx proxies /v1/* → backend)
-const API = '/v1';
+const API = 'http://localhost:8000/v1';
 
-// ── Auth state ────────────────────────────────
-let authToken   = localStorage.getItem('mts-token') || null;
-let userMemory  = [];   // [{key, value, category, score}]
+// Auth state
+let authToken = localStorage.getItem('mts-token') || null;
+let userMemory = [];   // [{key, value, category, score}]
 
 function authHeaders() {
   return authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
 }
 
-// ── Auth API ──────────────────────────────────
 async function apiAuthRegister(email, password) {
   const r = await fetch(`${API}/auth/register`, {
     method: 'POST',
@@ -40,19 +37,41 @@ async function apiAuthLogin(email, password) {
   return r.json();
 }
 
-// ── Utils ─────────────────────────────────────
-function uuid() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = Math.random() * 16 | 0;
-    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-  });
+async function loadMemory() {
+  if (!currentUserId) return;
+  try {
+    const r = await fetch(`${API}/memory/${currentUserId}`, { headers: authHeaders() });
+    if (r.ok) {
+      const d = await r.json();
+      userMemory = d.memories || [];
+    }
+  } catch {}
 }
 
-function fileToBase64(file) {
-  return new Promise((res, rej) => {
-    const fr = new FileReader();
-    fr.onload = () => res(fr.result.split(',')[1]);
-    fr.onerror = rej;
-    fr.readAsDataURL(file);
-  });
+function buildMemoryBlock() {
+  if (!userMemory.length) return null;
+  const top = userMemory.slice(0, 10);
+  return 'Факты о пользователе:\n' + top.map(m => `- ${m.key}: ${m.value}`).join('\n');
+}
+
+function fireExtractMemory(assistantText) {
+  if (!currentUserId || !assistantText || assistantText.length < 30) return;
+  fetch(`${API}/memory/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({
+      user_id: currentUserId,
+      conv_id: currentConvId,
+      assistant_message: assistantText,
+    }),
+  }).catch(() => {});
+}
+
+function fireSaveMessage(role, content, modelUsed) {
+  if (!currentUserId || !currentConvId) return;
+  fetch(`${API}/history/${currentUserId}/${currentConvId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ role, content, model_used: modelUsed || null }),
+  }).catch(() => {});
 }

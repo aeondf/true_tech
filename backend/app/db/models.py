@@ -36,7 +36,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id         = Column(String, primary_key=True)
-    conv_id    = Column(String, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    conv_id    = Column("conversation_id", String, nullable=False, primary_key=True)
     role       = Column(String, nullable=False)   # user | assistant | system
     content    = Column(Text, nullable=False)
     model_used = Column(String, nullable=True)
