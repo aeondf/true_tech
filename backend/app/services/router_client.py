@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 """
-Task Router — deterministic rules first, MWS API as LLM fallback.
+Task Router — трёхпроходная классификация запросов.
 
-Route decision:
-  Input:  { message: str, attachments: list[Attachment] }
-  Output: { task_type: str, model_id: str, tools: list[str], confidence: float }
+Проход 1 — MIME / расширение (O(1), confidence=1.0)
+Проход 2 — структурный анализ текста (O(n), confidence=0.9)
+Проход 3 — LLM-классификатор llama-3.1-8b-instruct (fallback, confidence из LLM)
+
+Возвращает: RouteResult(task_type, model_id, confidence, which_pass)
 """
-import re
 import json
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 
 import httpx
 from fastapi import Depends
@@ -19,119 +21,150 @@ from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
-TASK_MODELS = {
-    "text":           "mws-gpt-alpha",
-    "code":           "qwen3-coder-480b-a35b",
-    "deep_research":  "qwen2.5-72b-instruct",
-    "asr":            "whisper-turbo-local",
-    "vlm":            "cotype-pro-vl-32b",
-    "image_gen":      "qwen-image",
-    "web_search":     "mws-gpt-alpha",
-    "web_parse":      "mws-gpt-alpha",
-    "file_qa":        "mws-gpt-alpha",
-}
+# ── Модели по task_type ───────────────────────────────────────────
 
-TASK_TOOLS = {
-    "web_search":    ["web_search"],
-    "web_parse":     ["web_parse"],
-    "deep_research": ["web_search", "web_parse"],
-    "file_qa":       ["rag"],
+TASK_MODELS: dict[str, str] = {
+    "text":          "qwen2.5-72b-instruct",
+    "code":          "qwen3-coder-480b-a35b",
+    "asr":           "whisper-turbo-local",
+    "vlm":           "cotype-pro-vl-32b",
+    "image_gen":     "qwen-image",
+    "web_search":    "qwen2.5-72b-instruct",
+    "web_parse":     "qwen2.5-72b-instruct",
+    "deep_research": "qwen2.5-72b-instruct",
+    "file_qa":       "qwen2.5-72b-instruct",
 }
 
 AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".flac"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+DOC_EXTS   = {".pdf", ".docx", ".txt"}
 
-CODE_KEYWORDS = re.compile(
-    r"(код\b|функци|class |def |реализу|напиши|алгоритм|скрипт|программ|написать)",
+# ── Паттерны Прохода 2 ────────────────────────────────────────────
+
+RESEARCH_RE = re.compile(
+    r"(исследу|глубокий анализ|подробно разбери|deep research"
+    r"|подробный анализ|детальный анализ|разбери подробно"
+    r"|изучи тему|проанализируй|расскажи подробно)",
     re.IGNORECASE,
 )
-URL_PATTERN = re.compile(r"https?://\S+")
-RESEARCH_KEYWORDS = re.compile(
-    r"(исследу|глубокий анализ|подробно разбери|deep research|расскажи подробно"
-    r"|подробный анализ|детальный анализ|разбери подробно|изучи|проанализируй)",
+
+IMAGE_GEN_RE = re.compile(
+    r"(нарисуй|сгенерируй (изображение|картинку|арт)|создай (изображение|картинку)"
+    r"|draw |generate (image|picture|art)|imagine )",
     re.IGNORECASE,
 )
 
-ROUTER_SYSTEM_PROMPT = (
-    "You are a task router. Given a user message, output ONLY a JSON object:\n"
+CODE_RE = re.compile(
+    r"(код\b|функци|class |def |реализу|напиши (функцию|скрипт|код|программу)"
+    r"|алгоритм|скрипт\b|программ|SELECT |INSERT |CREATE TABLE)",
+    re.IGNORECASE,
+)
+
+URL_RE = re.compile(r"https?://\S+")
+
+# Явный запрос парсить URL
+WEB_PARSE_RE = re.compile(
+    r"(открой|прочитай|проанализируй|разбери|перейди по|summarize|parse|read) .{0,60}https?://",
+    re.IGNORECASE,
+)
+
+# Поисковый intent при наличии URL (ищи / найди + url)
+WEB_SEARCH_RE = re.compile(
+    r"(найди|поищи|search|look up|find)",
+    re.IGNORECASE,
+)
+
+# ── LLM prompt ───────────────────────────────────────────────────
+
+_LLM_SYSTEM = (
+    "You are a request classifier. Given a user message, output ONLY valid JSON:\n"
     '{"task_type": "<type>", "confidence": <0.0-1.0>}\n\n'
-    "Valid task types: text, code, web_search, web_parse, deep_research, "
+    "Valid types: text, code, web_search, web_parse, deep_research, "
     "file_qa, asr, vlm, image_gen\n\n"
     "Examples:\n"
-    '{"message":"Привет, как дела?"} → {"task_type":"text","confidence":0.99}\n'
-    '{"message":"Найди информацию о квантовых компьютерах"} → {"task_type":"web_search","confidence":0.9}\n'
-    '{"message":"Напиши функцию сортировки на Python"} → {"task_type":"code","confidence":0.95}\n'
-    '{"message":"Нарисуй закат над морем"} → {"task_type":"image_gen","confidence":0.92}\n'
-    '{"message":"Расскажи подробно про блокчейн"} → {"task_type":"deep_research","confidence":0.88}\n'
+    '{"message":"Привет"} → {"task_type":"text","confidence":0.99}\n'
+    '{"message":"Напиши merge sort на Python"} → {"task_type":"code","confidence":0.97}\n'
+    '{"message":"Найди последние новости о GPT-5"} → {"task_type":"web_search","confidence":0.92}\n'
+    '{"message":"Нарисуй закат над морем"} → {"task_type":"image_gen","confidence":0.95}\n'
+    '{"message":"Расскажи подробно про квантовые вычисления"} → {"task_type":"deep_research","confidence":0.88}\n'
 )
 
+LLM_ROUTER_MODEL = "llama-3.1-8b-instruct"
+LLM_ROUTER_TIMEOUT = 60.0
+
+
+# ── Результат роутинга ────────────────────────────────────────────
 
 @dataclass
 class RouteResult:
-    task_type: str
-    model_id: str
-    tools: list[str] = field(default_factory=list)
-    confidence: float = 1.0
+    task_type:  str
+    model_id:   str
+    confidence: float
+    which_pass: int   # 1, 2 или 3
 
+
+# ── Роутер ────────────────────────────────────────────────────────
 
 class RouterClient:
     def __init__(self, settings: Settings):
-        self.mws_base = settings.MWS_BASE_URL
-        self.mws_key = settings.MWS_API_KEY
-        self.router_model = settings.MODEL_TEXT  # mws-gpt-alpha для роутинга
-        self.fallback_model = settings.MODEL_TEXT
+        self._base_url = settings.MWS_BASE_URL
+        self._api_key  = settings.MWS_API_KEY
 
-    def _deterministic(
-        self, message: str, attachments: list[dict]
-    ) -> RouteResult | None:
-        """Fast O(1) rules — if matched, skip LLM entirely."""
+    # ── Проход 1 ─────────────────────────────────────────────────
+
+    def _pass1(self, attachments: list[dict]) -> RouteResult | None:
         for att in attachments:
             name: str = att.get("name", "").lower()
             mime: str = att.get("mime", "").lower()
-            ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+            ext = ("." + name.rsplit(".", 1)[-1]) if "." in name else ""
 
             if ext in AUDIO_EXTS or mime.startswith("audio/"):
-                return RouteResult("asr", TASK_MODELS["asr"], [])
+                return RouteResult("asr", TASK_MODELS["asr"], 1.0, 1)
 
             if ext in IMAGE_EXTS or mime.startswith("image/"):
-                return RouteResult("vlm", TASK_MODELS["vlm"], [])
+                return RouteResult("vlm", TASK_MODELS["vlm"], 1.0, 1)
 
-            if ext in {".pdf", ".docx", ".txt"}:
-                return RouteResult(
-                    "file_qa", TASK_MODELS["file_qa"], TASK_TOOLS["file_qa"]
-                )
-
-        if RESEARCH_KEYWORDS.search(message):
-            return RouteResult(
-                "deep_research",
-                TASK_MODELS["deep_research"],
-                TASK_TOOLS["deep_research"],
-            )
-
-        if URL_PATTERN.search(message):
-            return RouteResult(
-                "web_parse", TASK_MODELS["web_parse"], TASK_TOOLS["web_parse"]
-            )
-
-        if CODE_KEYWORDS.search(message):
-            return RouteResult("code", TASK_MODELS["code"], [])
+            if ext in DOC_EXTS:
+                return RouteResult("file_qa", TASK_MODELS["file_qa"], 1.0, 1)
 
         return None
 
-    async def _llm_route_mws(self, message: str) -> RouteResult:
-        """Call MWS API (mws-gpt-alpha) for ambiguous routing."""
+    # ── Проход 2 ─────────────────────────────────────────────────
+
+    def _pass2(self, message: str) -> RouteResult | None:
+        # URL-проверка идёт ДО research: "проанализируй ссылку https://..." → web_parse
+        if URL_RE.search(message):
+            if WEB_PARSE_RE.search(message):
+                return RouteResult("web_parse", TASK_MODELS["web_parse"], 0.9, 2)
+            if WEB_SEARCH_RE.search(message):
+                return RouteResult("web_search", TASK_MODELS["web_search"], 0.9, 2)
+
+        if RESEARCH_RE.search(message):
+            return RouteResult("deep_research", TASK_MODELS["deep_research"], 0.9, 2)
+
+        if IMAGE_GEN_RE.search(message):
+            return RouteResult("image_gen", TASK_MODELS["image_gen"], 0.9, 2)
+
+        if CODE_RE.search(message):
+            return RouteResult("code", TASK_MODELS["code"], 0.9, 2)
+
+        return None
+
+    # ── Проход 3 (LLM) ───────────────────────────────────────────
+
+    async def _pass3(self, message: str) -> RouteResult:
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=LLM_ROUTER_TIMEOUT) as client:
                 r = await client.post(
-                    f"{self.mws_base}/v1/chat/completions",
+                    f"{self._base_url}/v1/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.mws_key}",
+                        "Authorization": f"Bearer {self._api_key}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": self.router_model,
+                        "model": LLM_ROUTER_MODEL,
                         "messages": [
-                            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+                            {"role": "system", "content": _LLM_SYSTEM},
                             {"role": "user", "content": message},
                         ],
                         "max_tokens": 64,
@@ -140,33 +173,33 @@ class RouterClient:
                 )
                 r.raise_for_status()
                 content = r.json()["choices"][0]["message"]["content"]
-                # Парсим JSON из ответа
-                json_match = re.search(r"\{.*\}", content, re.DOTALL)
-                if json_match:
-                    parsed = json.loads(json_match.group())
-                else:
-                    parsed = json.loads(content)
-                task_type = parsed.get("task_type", "text")
+                m = re.search(r"\{.*?\}", content, re.DOTALL)
+                parsed = json.loads(m.group() if m else content)
+                task_type  = parsed.get("task_type", "text")
                 confidence = float(parsed.get("confidence", 0.5))
+
         except Exception as exc:
-            logger.warning("MWS routing error: %s", exc)
-            task_type, confidence = "text", 0.5
+            logger.warning("LLM router error (pass 3): %s", exc)
+            return RouteResult("text", TASK_MODELS["text"], 0.5, 3)
 
         if confidence < 0.7:
             task_type = "text"
 
-        model_id = TASK_MODELS.get(task_type, self.fallback_model)
-        tools = TASK_TOOLS.get(task_type, [])
-        return RouteResult(task_type, model_id, tools, confidence)
+        model_id = TASK_MODELS.get(task_type, TASK_MODELS["text"])
+        return RouteResult(task_type, model_id, confidence, 3)
+
+    # ── Публичный метод ───────────────────────────────────────────
 
     async def route(self, message: str, attachments: list[dict]) -> RouteResult:
-        # 1. Deterministic rules (fastest)
-        det = self._deterministic(message, attachments)
-        if det is not None:
-            return det
+        result = self._pass1(attachments)
+        if result:
+            return result
 
-        # 2. MWS API
-        return await self._llm_route_mws(message)
+        result = self._pass2(message)
+        if result:
+            return result
+
+        return await self._pass3(message)
 
 
 def get_router_client(settings: Settings = Depends(get_settings)) -> RouterClient:

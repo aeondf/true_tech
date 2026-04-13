@@ -1,387 +1,108 @@
 from __future__ import annotations
 
 """
-OpenAI-compatible proxy  →  MWS API.
+OpenAI-compatible proxy → MWS API.
 
-Pipeline per request:
-  1. Intercept → Router (deterministic rules / LLM fallback)
-  2. Model substitution
-  3. Context compression (if history > 8000 tokens)
-  4. Cascade tool execution (web_search / web_parse)
-  5. Memory injection (cosine search → system prompt)
-  6. RAG injection for file_qa (pgvector chunk search)
-  7. Forward to MWS (stream or regular)
-  8. Save history to DB (fire & forget)
-  9. Extract & store memory facts (fire & forget)
+Pipeline:
+  1. Route (3-pass router)
+  2. Inject memory as system message (if system_prompt provided)
+  3. Forward to MWS (stream or regular) — without internal fields
+  4. Log router decision to DB (fire & forget)
 """
 import asyncio
 import logging
 import time
-import traceback
 import uuid
 
-import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 
-_log = logging.getLogger(__name__)
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.config import Settings, get_settings
-from app.db.database import get_session, SessionLocal
-from app.db.models import RouterLog, User, Conversation, Message as DBMessage
+from app.db.database import SessionLocal
+from app.db.models import RouterLog
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
-from app.services.cascade_router import CascadeRouter, get_cascade_router
-from app.services.chunk_store import ChunkStore, get_chunk_store
-from app.services.context_compressor import ContextCompressor, get_context_compressor
-from app.services.embedding_service import EmbeddingService, get_embedding_service
-from app.services.memory_extractor import MemoryExtractor
-from app.services.memory_retriever import MemoryRetriever, get_memory_retriever
 from app.services.mws_client import MWSClient, get_mws_client
 from app.services.router_client import RouterClient, RouteResult, get_router_client
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-# ── Helpers ──────────────────────────────────────────────────────
-
 def _last_user_text(request: ChatCompletionRequest) -> str:
     for m in reversed(request.messages):
         if m.role == "user":
-            return m.content
+            return m.content if isinstance(m.content, str) else ""
     return ""
 
 
-async def _inject_memories(
-    request: ChatCompletionRequest,
-    retriever: MemoryRetriever,
-    user_id: str,
-) -> ChatCompletionRequest:
-    query = _last_user_text(request)
-    memories = await retriever.retrieve(user_id=user_id, query=query)
-    if not memories:
-        return request
-
-    block = "\n".join(f"- {m}" for m in memories)
-    addition = f"\n\n[Факты о пользователе]\n{block}"
-    messages = list(request.messages)
-    if messages and messages[0].role == "system":
-        messages[0] = messages[0].model_copy(
-            update={"content": messages[0].content + addition}
-        )
-    else:
-        messages.insert(0, Message(role="system", content=addition.strip()))
-    return request.model_copy(update={"messages": messages})
-
-
-async def _inject_rag(
-    request: ChatCompletionRequest,
-    chunk_store: ChunkStore,
-    embedder: EmbeddingService,
-    user_id: str,
-) -> ChatCompletionRequest:
-    query = _last_user_text(request)
-    vector = await embedder.embed(query)
-    chunks = await chunk_store.search(user_id=user_id, query_vector=vector, top_k=5)
-    if not chunks:
-        return request
-
-    context = "\n\n".join(
-        f"[Фрагмент {i+1}]\n{c['text']}" for i, c in enumerate(chunks)
-    )
-    addition = f"\n\n[Контекст из файлов пользователя]\n{context}"
-    messages = list(request.messages)
-    if messages and messages[0].role == "system":
-        messages[0] = messages[0].model_copy(
-            update={"content": messages[0].content + addition}
-        )
-    else:
-        messages.insert(0, Message(role="system", content=addition.strip()))
-    return request.model_copy(update={"messages": messages})
-
-
-async def _log_route(
-    user_id: str,
-    message: str,
-    route: RouteResult,
-    latency_ms: int,
-) -> None:
+async def _log_route(user_id: str, message: str, route: RouteResult, latency_ms: int) -> None:
     try:
         async with SessionLocal() as session:
-            log = RouterLog(
+            session.add(RouterLog(
                 id=str(uuid.uuid4()),
                 user_id=user_id,
                 message_preview=message[:512],
                 task_type=route.task_type,
                 model_id=route.model_id,
                 confidence=route.confidence,
+                which_pass=route.which_pass,
                 latency_ms=latency_ms,
-            )
-            session.add(log)
-            await session.commit()
-    except Exception as e:
-        _log.warning("_log_route failed: %s", e)
-
-
-async def _ensure_user_and_conversation(
-    session, user_id: str, conversation_id: str
-) -> None:
-    """Upsert user + conversation rows."""
-    from sqlalchemy import select as _select
-    # User
-    u = (await session.execute(_select(User).where(User.id == user_id))).scalar_one_or_none()
-    if not u:
-        session.add(User(id=user_id))
-    # Conversation
-    c = (await session.execute(_select(Conversation).where(Conversation.id == conversation_id))).scalar_one_or_none()
-    if not c:
-        session.add(Conversation(id=conversation_id, user_id=user_id))
-    await session.commit()
-
-
-def _parse_sse_text(payload: bytes) -> str:
-    """Extract assistant text from collected SSE bytes."""
-    import json as _json
-    text = ""
-    for line in payload.decode("utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        data_str = line[5:].strip()
-        if data_str == "[DONE]":
-            break
-        try:
-            data = _json.loads(data_str)
-            token = data["choices"][0]["delta"].get("content", "")
-            if token:
-                text += token
-        except Exception:
-            continue
-    return text
-
-
-async def _save_messages(
-    user_id: str,
-    conversation_id: str,
-    user_text: str,
-    assistant_payload,  # str or bytes (SSE stream)
-    settings: Settings | None = None,
-) -> None:
-    """Persist user + assistant messages to DB, then extract memory facts."""
-    from sqlalchemy import select as _sel
-    try:
-        async with SessionLocal() as session:
-            await _ensure_user_and_conversation(session, user_id, conversation_id)
-
-            # Save user message
-            session.add(DBMessage(
-                id=str(uuid.uuid4()),
-                conversation_id=conversation_id,
-                role="user",
-                content=user_text,
             ))
-
-            # Unpack assistant text
-            if isinstance(assistant_payload, str):
-                assistant_text = assistant_payload
-            elif isinstance(assistant_payload, bytes):
-                assistant_text = _parse_sse_text(assistant_payload)
-            else:
-                assistant_text = ""
-
-            if assistant_text:
-                session.add(DBMessage(
-                    id=str(uuid.uuid4()),
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=assistant_text,
-                ))
-
-            # Auto-title from first user message
-            conv = (await session.execute(
-                _sel(Conversation).where(Conversation.id == conversation_id)
-            )).scalar_one_or_none()
-            if conv and not conv.title:
-                conv.title = user_text[:80]
-
             await session.commit()
     except Exception as e:
-        _log.warning("_save_messages failed: %s", e)
-        return
-
-    # Extract and store memory facts (separate session, non-blocking)
-    if assistant_text and settings:
-        try:
-            from app.db.repositories.memory_repo import MemoryRepository
-            from app.services.embedding_service import EmbeddingService
-            async with SessionLocal() as mem_session:
-                _settings = settings or get_settings()
-                mws = MWSClient(_settings)
-                embedder = EmbeddingService(mws, _settings)
-                repo = MemoryRepository(mem_session)
-                extractor = MemoryExtractor(mws, embedder, repo, _settings)
-                facts = await extractor.extract_and_store(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    user_msg=user_text,
-                    assistant_msg=assistant_text,
-                )
-                if facts:
-                    _log.debug("Extracted %d memory facts for user=%s", len(facts), user_id)
-        except Exception as e:
-            _log.warning("Memory extraction failed for user=%s: %s", user_id, e)
+        _log.warning("Router log write failed: %s", e)
 
 
-# ── Endpoints ────────────────────────────────────────────────────
+def _build_mws_request(request: ChatCompletionRequest) -> ChatCompletionRequest:
+    """Strip internal fields and inject system_prompt before forwarding to MWS."""
+    messages = list(request.messages)
+
+    # Prepend memory block as system message if provided
+    if request.system_prompt:
+        messages = [Message(role="system", content=request.system_prompt)] + messages
+
+    return request.model_copy(update={
+        "messages": messages,
+        "system_prompt": None,       # не отправляем в MWS
+        "conversation_id": None,     # не отправляем в MWS
+    })
+
 
 @router.post("/chat/completions")
 async def chat_completions(
-    raw: Request,
+    request: ChatCompletionRequest,
     mws: MWSClient = Depends(get_mws_client),
     router_client: RouterClient = Depends(get_router_client),
-    retriever: MemoryRetriever = Depends(get_memory_retriever),
-    chunk_store: ChunkStore = Depends(get_chunk_store),
-    embedder: EmbeddingService = Depends(get_embedding_service),
-    compressor: ContextCompressor = Depends(get_context_compressor),
-    cascade: CascadeRouter = Depends(get_cascade_router),
-    session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ):
-    body = await raw.json()
-    request = ChatCompletionRequest(**body)
-    user_id: str = body.get("user", "anonymous")
-    message_text = _last_user_text(request)
-
-    # 1. Route
+    # Роутинг (не знает о system_prompt/conversation_id)
     t0 = time.monotonic()
-    route = await router_client.route(
-        message=message_text,
-        attachments=body.get("attachments", []),
-    )
+    attachments: list[dict] = []
+    message_text = _last_user_text(request)
+    route = await router_client.route(message=message_text, attachments=attachments)
     latency_ms = int((time.monotonic() - t0) * 1000)
-    # Если клиент явно указал модель (не "auto") — используем её, иначе подставляем из роутера
-    explicit_model = request.model not in ("auto", "", None)
-    if not explicit_model:
+
+    user_id = getattr(request, "user", "anonymous") or "anonymous"
+
+    # Подставляем модель если клиент не указал явно
+    if request.model in ("auto", "", None):
         request = request.model_copy(update={"model": route.model_id})
 
-    # 2. Compress context if history is too long
-    compressed_messages = await compressor.compress_if_needed(list(request.messages))
-    request = request.model_copy(update={"messages": compressed_messages})
+    # Логируем (fire & forget)
+    asyncio.create_task(_log_route(user_id, message_text, route, latency_ms))
 
-    # 3. Cascade tool execution (web_search + web_parse параллельно если нужно)
-    if route.tools:
-        request = await cascade.run(request, route.tools, message_text)
+    # Строим запрос для MWS (с memory injection, без internal fields)
+    mws_request = _build_mws_request(request)
 
-    # 4. Memory injection (silently skip if embeddings unavailable)
-    try:
-        request = await _inject_memories(request, retriever, user_id)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning("Memory injection failed, skipping: %s", e)
-
-    # 5. RAG injection for file queries (silently skip if embeddings unavailable)
-    if route.task_type == "file_qa":
-        try:
-            request = await _inject_rag(request, chunk_store, embedder, user_id)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("RAG injection failed, skipping: %s", e)
-
-    # 6. Log route decision (fire & forget)
-    asyncio.create_task(
-        _log_route(user_id, message_text, route, latency_ms)
-    )
-
-    # 7. Forward to MWS
-    conversation_id: str = body.get("conversation_id", "")
-    try:
-        if request.stream:
-            async def _stream_and_save():
-                collected = []
-                async for chunk in mws.stream_chat(request):
-                    collected.append(chunk)
-                    yield chunk
-                # Save history + extract memory (fire & forget)
-                if conversation_id:
-                    asyncio.create_task(
-                        _save_messages(user_id, conversation_id, message_text, b"".join(collected), settings)
-                    )
-
-            return StreamingResponse(
-                _stream_and_save(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-
-        response = await mws.chat(request)
-        # Save history + extract memory (fire & forget)
-        if conversation_id:
-            assistant_text = ""
-            try:
-                assistant_text = response["choices"][0]["message"]["content"]
-            except Exception:
-                pass
-            asyncio.create_task(
-                _save_messages(user_id, conversation_id, message_text, assistant_text, settings)
-            )
-        return JSONResponse(content=response)
-
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        try:
-            detail = e.response.json()
-        except Exception:
-            detail = e.response.text
-        return JSONResponse(
-            status_code=status,
-            content={
-                "error": {
-                    "code": status,
-                    "message": f"MWS API error for model '{request.model}'",
-                    "detail": detail,
-                }
-            },
+    # Форвардим в MWS
+    if mws_request.stream:
+        return StreamingResponse(
+            mws.stream_chat(mws_request),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as e:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": {
-                    "code": 503,
-                    "message": "MWS API недоступен (timeout/connection error)",
-                    "detail": str(e),
-                }
-            },
-        )
-    except ValueError as e:
-        return JSONResponse(
-            status_code=502,
-            content={
-                "error": {
-                    "code": 502,
-                    "message": "MWS API вернул некорректный ответ",
-                    "detail": str(e),
-                }
-            },
-        )
-    except Exception as e:
-        _log.error(
-            "Unhandled exception in chat_completions (model=%s): %s\n%s",
-            getattr(request, "model", "?"),
-            e,
-            traceback.format_exc(),
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": {
-                    "code": 500,
-                    "message": "Internal server error",
-                    "detail": str(e),
-                    "type": type(e).__name__,
-                }
-            },
-        )
+    return JSONResponse(content=await mws.chat(mws_request))
 
 
 @router.post("/completions")

@@ -1,175 +1,175 @@
 # MTS AI Hub — True Tech Hack
 
-Умный AI-ассистент: чат, голос, файлы, Deep Research, генерация изображений.
-Все LLM-запросы идут через **MWS API** (`api.gpt.mws.ru`) — локальных моделей нет.
+Умный AI-ассистент в стиле МТС: чат с роутингом по задаче, голос, файлы, Deep Research, долгосрочная память, история диалогов.
 
 ---
 
-## Быстрый старт
+## Быстрый старт (Docker)
 
 ```bash
 cp backend/.env.example backend/.env
-# Заполнить MWS_API_KEY в backend/.env
-docker compose up --build
+# Вставьте ваш MWS_API_KEY в backend/.env
+docker compose up -d --build
 ```
 
 | Сервис | Адрес |
 |--------|-------|
-| API (Swagger) | http://localhost:8000/docs |
-| Health check | http://localhost:8000/v1/health |
+| **Фронтенд (UI)** | http://localhost:3000 |
+| **API (Swagger)** | http://localhost:8000/docs |
+| **Health check** | http://localhost:8000/v1/health |
 
 ---
 
 ## Архитектура
 
 ```
-docker-compose.yml
-├── backend   :8000  — FastAPI (AI Gateway → MWS API)
-├── postgres  :5432  — PostgreSQL + pgvector
-└── redis     :6379  — rate limiting
+docker-compose.yml (root)
+├── frontend   :3000  — nginx, раздаёт index.html, проксирует /v1/* → backend
+├── backend    :8000  — FastAPI (AI Gateway → MWS API)
+├── postgres   :5432  — PostgreSQL 16 + pgvector (история, память, роутер-лог)
+└── redis      :6379  — кэш и rate limiting
 ```
 
-Каждый запрос проходит через **роутер** → подбирается модель и инструменты → запрос уходит в MWS API.
+Все LLM-запросы идут через **MWS API** (`api.gpt.mws.ru`) — облачный inference.  
+Локальных моделей нет, Ollama не требуется.
+
+---
+
+## Что работает
+
+### Бэкенд
+| Функция | Статус | Примечание |
+|---------|--------|------------|
+| 3-pass роутер | ✅ | MIME → regex → LLM llama-3.1-8b |
+| Чат (stream + regular) | ✅ | OpenAI-совместимый прокси |
+| Авторизация (register/login/JWT) | ✅ | bcrypt + JWT 7 дней |
+| История диалогов | ✅ | Postgres, per-user conversations |
+| Долгосрочная память | ✅ | LLM-экстракция фактов, инъекция в system |
+| Deep Research | ✅ | 5 подзапросов + web-search + SSE-стриминг |
+| Голос — ASR | ✅ | MWS whisper-turbo-local (primary) |
+| Голос — TTS | ✅ | edge-tts (Silero опционально) |
+| Анализ изображений (VLM) | ✅ | qwen2.5-vl через MWS |
+| Генерация изображений | ✅ | qwen-image через MWS |
+| Эмбеддинги | ✅ | bge-m3 через MWS |
+| Web-search + web-parse | ✅ | DuckDuckGo + BeautifulSoup |
+
+### Фронтенд
+| Функция | Статус | Примечание |
+|---------|--------|------------|
+| Чат-интерфейс (stream) | ✅ | |
+| Авторизация (login/register) | ✅ | JWT в localStorage |
+| Автологин при перезагрузке | ✅ | |
+| Голосовые сообщения | ✅ | запись → ASR → TTS воспроизведение |
+| Загрузка изображений (VLM) | ✅ | |
+| Deep Research с прогрессом | ✅ | SSE |
+| История диалогов | ✅ | сохраняется в Postgres |
+| Память пользователя | ✅ | fire-and-forget после каждого ответа |
+
+### Что не реализовано / отключено
+| Функция | Причина |
+|---------|---------|
+| Генерация PPTX | убрана из фронтенда (API-эндпоинт есть) |
+| RAG (PDF/DOCX upload) | API-эндпоинт есть, UI не подключён |
+| WebSocket голос (`/ws/voice`) | только HTTP voice/message в UI |
+| Silero TTS в Docker | требует torch 2GB+, слишком тяжёл для сборки; fallback → edge-tts |
+| Семантический поиск по памяти | pgvector таблица есть, поиск по эмбеддингам не подключён |
+
+---
+
+## API эндпоинты
 
 ```
-Запрос
-  └─ RouterClient (детерминированные правила → LLM fallback)
-       └─ CascadeRouter (параллельный web_search + web_parse если нужно)
-            └─ MemoryRetriever (pgvector cosine search → system prompt)
-                 └─ ContextCompressor (саммари истории > 8000 токенов)
-                      └─ MWSClient → MWS API
+# Auth
+POST /v1/auth/register          — регистрация (email + password)
+POST /v1/auth/login             — логин → JWT
+
+# Chat
+POST /v1/chat/completions       — чат (stream или regular, OpenAI-формат)
+POST /v1/completions            — text completion
+POST /v1/embeddings             — эмбеддинги (bge-m3)
+GET  /v1/models                 — список моделей MWS
+
+# History
+GET  /v1/history/{user_id}                  — список диалогов
+GET  /v1/history/{user_id}/{conv_id}        — сообщения диалога
+POST /v1/history/{user_id}/{conv_id}        — сохранить сообщение
+DELETE /v1/history/{user_id}/{conv_id}      — удалить диалог
+
+# Memory
+GET    /v1/memory/{user_id}             — все факты пользователя
+POST   /v1/memory/{user_id}             — upsert факта
+DELETE /v1/memory/{user_id}/{key}       — удалить факт
+POST   /v1/memory/extract               — fire-and-forget LLM-экстракция
+
+# Voice
+POST /v1/voice/message          — аудио → ASR → LLM → TTS → MP3
+WS   /v1/ws/voice               — WebSocket голосовой чат
+
+# Vision
+POST /v1/vlm/analyze            — анализ изображения (qwen2.5-vl)
+POST /v1/image/generate         — генерация изображения (qwen-image)
+
+# Research & Tools
+POST /v1/research               — Deep Research (SSE стриминг)
+POST /v1/tools/web-search       — поиск DuckDuckGo
+POST /v1/tools/web-parse        — парсинг веб-страницы
+
+# System
+GET  /v1/health                 — статус сервисов
 ```
 
 ---
 
 ## Модели
 
+Полный каталог — в [MODELS.md](MODELS.md).
+
 | Задача | Модель |
 |--------|--------|
-| Чат, роутинг | mws-gpt-alpha |
+| Чат (text) | mws-gpt-alpha |
 | Код | qwen3-coder-480b-a35b |
-| Deep Research / длинный контекст | qwen2.5-72b-instruct |
-| Эмбеддинги (RAG, память) | bge-m3 |
-| Распознавание речи | whisper-turbo-local |
-| Анализ изображений (VLM) | cotype-pro-vl-32b |
+| Deep Research | qwen2.5-72b-instruct |
+| Роутер (LLM pass) | llama-3.1-8b-instruct |
+| Память (экстрактор) | llama-3.1-8b-instruct |
+| Эмбеддинги | bge-m3 |
+| ASR | whisper-turbo-local |
+| VLM | qwen2.5-vl |
 | Генерация изображений | qwen-image |
 
-Полный каталог MWS — в [MODELS.md](MODELS.md).
-
 ---
 
-## API
-
-```
-POST /v1/chat/completions       — чат со стримингом (OpenAI-совместимый)
-POST /v1/research               — Deep Research с SSE прогрессом
-POST /v1/voice/message          — голос → ASR → LLM → TTS → MP3
-WS   /v1/voice/ws/voice         — голосовой чат через WebSocket
-POST /v1/files/upload           — загрузить PDF/DOCX/TXT для RAG
-POST /v1/image/generate         — генерация изображения (qwen-image)
-POST /v1/vlm/analyze            — анализ изображения по URL (cotype-pro-vl-32b)
-POST /v1/embeddings             — эмбеддинги (bge-m3)
-POST /v1/tools/web-search       — поиск DuckDuckGo
-POST /v1/tools/web-parse        — парсинг веб-страницы
-GET  /v1/memory/{user_id}       — факты о пользователе
-POST /v1/memory/{user_id}/search — семантический поиск по памяти
-GET  /v1/history/{user_id}      — история разговоров
-GET  /v1/models                 — список доступных моделей
-GET  /v1/health                 — статус сервисов
-```
-
-### Deep Research (`/v1/research`)
-
-SSE-стрим из 5 событий:
-
-```
-event: progress  {"step": 1, "message": "Генерирую подзапросы…"}
-event: progress  {"step": 2, "sub_queries": [...]}
-event: progress  {"step": 3, "message": "Ищу и парсю страницы…"}
-event: progress  {"step": 4, "pages_fetched": N}
-event: progress  {"step": 5, "message": "Синтезирую ответ…"}
-event: done      {"answer": "..."}
-# или
-event: error     {"message": "..."}
-```
-
-Пайплайн: генерация 5 под-запросов → параллельный поиск + парсинг страниц → синтез с источниками.
-
----
-
-## Что реализовано
-
-### Роутинг
-- **Детерминированные правила** — вложение аудио → ASR, изображение → VLM, файл → RAG, URL → web_parse, кодовые ключевые слова → code. Без LLM-вызова.
-- **LLM fallback** — mws-gpt-alpha с temperature=0, если правила не сработали. Confidence < 0.7 → text.
-- **CascadeRouter** — параллельный web_search + web_parse за один запрос, результат подкладывается в system-промпт.
-
-### Память и контекст
-- **MemoryExtractor** — после каждого ответа LLM извлекает факты о пользователе (имя, интересы, профессия), эмбеддит и хранит в pgvector.
-- **MemoryRetriever** — cosine-поиск по фактам, топ-K вставляется в system-промпт.
-- **ContextCompressor** — история > 8000 токенов → LLM делает саммари старых сообщений.
-
-### RAG
-- Загрузка PDF / DOCX / TXT → чанки по 512 токенов с overlap 64 → bge-m3 эмбеддинги → pgvector (IVFFlat).
-- При `task_type=file_qa` — cosine-поиск top-5 чанков → в system-промпт.
-
-### Голос
-- HTTP: аудио → Whisper (MWS) → LLM (max 300 токенов, кратко для TTS) → edge-tts → MP3.
-- WebSocket: бинарные чанки → транскрипт → стриминг токенов → MP3.
-- Валидация MIME-типа на входе.
-
-### Изображения
-- Генерация: промпт → qwen-image → URL картинки.
-- Анализ: URL + вопрос → cotype-pro-vl-32b → текст.
-
-### Инфраструктура
-- Rate limiting через Redis (60 req/min по умолчанию).
-- Retry с экспоненциальным backoff на 429/503 от MWS.
-- MWSClient с единым `httpx.AsyncClient` на все запросы.
-
----
-
-## Что не работает / известные проблемы
-
-- **MemoryExtractor не вызывается** — `extract_and_store` нигде не вызывается после ответа LLM. Факты не накапливаются автоматически.
-- **Генерация PPTX** — эндпоинт упоминается в тестах (`/v1/tools/generate-pptx`), но `tools.py` содержит только `web-search` и `web-parse`. Либо удалён, либо не подключён к роутеру.
-- **WebSocket голос без истории** — каждый чанк обрабатывается отдельно, контекст разговора не накапливается.
-- **images.py использует прямой httpx** вместо `MWSClient` — нет retry, нет единого timeout-конфига.
-- **`voice.py` не валидирует размер файла** — теоретически можно залить большой аудиофайл и положить память.
-- **Нет аутентификации** — все эндпоинты открыты, `user_id` передаётся клиентом.
-
----
-
-## Что можно улучшить
-
-### Приоритетное
-1. **Вызвать MemoryExtractor** в `proxy.py` после получения ответа — сейчас память не пишется.
-2. **Аутентификация** — хотя бы API-ключ / JWT, иначе любой может писать в память и историю любого user_id.
-3. **images.py → MWSClient** — унифицировать, чтобы retry и таймауты работали как везде.
-4. **Ограничить размер аудио** в `voice.py` (как уже сделано в `files.py`).
-
-### Архитектурное
-5. **Кэш роутера в Redis** — одинаковые фразы роутируются по-новому каждый раз, хотя ответ детерминирован.
-6. **WebSocket голос с историей** — накапливать `full_text` между чанками одной сессии.
-7. **Streaming для Deep Research через WebSocket** — сейчас только HTTP SSE.
-8. **Очередь задач** (Celery / ARQ) для long-running операций: research, генерация изображений — освободит воркеры FastAPI.
-9. **Метрики** (Prometheus) — сейчас нет счётчиков latency / error rate по моделям.
-10. **Тесты** — только ноутбук-тестер, нет pytest-unit тестов для роутера, pipeline и бизнес-логики.
-
----
-
-## Локальная разработка (без Docker)
+## Разработка (без Docker)
 
 ```bash
+# Postgres + Redis локально
+docker compose up -d postgres redis
+
+# Бэкенд
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env  # добавить MWS_API_KEY
+# В .env: DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/mirea
 uvicorn app.main:app --reload
+
+# Фронтенд (простой HTTP-сервер)
+cd frontend
+python server.py   # http://localhost:8005
+
+# Интерактивный диалог с пайплайном (роутер → модель → память)
+cd backend
+python memory_dialog.py
+
+# Интерактивный тест пайплайна (роутер → модель)
+cd backend
+python pipeline_test.py
 ```
 
-Нужны запущенные PostgreSQL (с расширением pgvector) и Redis, либо только Docker для них:
+### Тесты
 
 ```bash
-docker compose up postgres redis -d
+cd backend
+pytest tests/ -v -s                          # все тесты
+pytest tests/test_auth_history_memory.py -v  # auth + история + память
+pytest tests/test_router_llm.py -v -s        # живой LLM-роутер
+pytest tests/test_memory_pipeline.py -v -s   # память + модели (интеграционные)
 ```
