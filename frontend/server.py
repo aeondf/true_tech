@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Simple HTTP server for the MTS AI frontend on port 8010."""
+"""Simple HTTP server for the MTS AI frontend."""
 import http.server
-import socketserver
 import os
+import socketserver
 
-PORT = 8010
+HOST = os.environ.get("FRONTEND_HOST", "127.0.0.1")
+PORT = int(os.environ.get("FRONTEND_PORT", "8010"))
 DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+
+
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -28,9 +34,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 if __name__ == '__main__':
     os.chdir(DIRECTORY)
-    with socketserver.TCPServer(('', PORT), Handler) as httpd:
-        httpd.allow_reuse_address = True
-        print(f"MTS AI Frontend running at http://localhost:{PORT}")
+    with ThreadingHTTPServer((HOST, PORT), Handler) as httpd:
+        print(f"MTS AI Frontend running at http://{HOST}:{PORT}")
         print(f"Serving files from: {DIRECTORY}")
         print("Press Ctrl+C to stop.")
         try:

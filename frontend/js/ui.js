@@ -48,11 +48,11 @@ function pickTemp(e,el,val,sub){
 }
 
 function getTemperature(){ const v=parseFloat(localStorage.getItem('mts-temperature')); return isNaN(v)?0.7:v; }
-function isMemoryEnabled(){ return document.querySelector('[data-setting="agentMemory"]')?.classList.contains('on')??true; }
+function isMemoryEnabled(){ return true; }
 function isHistoryEnabled(){ return document.querySelector('[data-setting="saveHistory"]')?.classList.contains('on')??true; }
 function isVoiceEnabled(){   return document.querySelector('[data-setting="voiceInput"]')?.classList.contains('on')??true; }
 
-function toggleAgentMemory(btn){ btn.classList.toggle('on'); }
+function toggleAgentMemory(btn){ btn.classList.add('on'); }
 function toggleSaveHistory(btn){ btn.classList.toggle('on'); }
 function toggleVoiceInput(btn){
   btn.classList.toggle('on');

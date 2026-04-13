@@ -20,6 +20,7 @@ class ChatCompletionRequest(BaseModel):
     # Extended fields — not forwarded to MWS, consumed by proxy
     system_prompt: str | None = None       # memory block injected as system message
     conversation_id: str | None = None     # for history persistence
+    use_memory: bool | None = True         # whether proxy should inject long-term memory
 
 
 class CompletionRequest(BaseModel):

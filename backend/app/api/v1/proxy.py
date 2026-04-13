@@ -1,25 +1,26 @@
 from __future__ import annotations
 
 """
-OpenAI-compatible proxy → MWS API.
+OpenAI-compatible proxy -> MWS API.
 
 Pipeline:
   1. Route (3-pass router)
-  2. Inject memory as system message (if system_prompt provided)
-  3. Forward to MWS (stream or regular) — without internal fields
-  4. Log router decision to DB (fire & forget)
+  2. Load long-term memory and inject it as a system message
+  3. Forward to MWS (stream or regular) without internal fields
+  4. Log router decision to DB (fire and forget)
 """
+
 import asyncio
 import logging
 import time
 import uuid
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import select
 
-from app.config import Settings, get_settings
 from app.db.database import SessionLocal
-from app.db.models import RouterLog
+from app.db.models import RouterLog, UserMemory
 from app.models.mws import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, Message
 from app.services.mws_client import MWSClient, get_mws_client
 from app.services.router_client import RouterClient, RouteResult, get_router_client
@@ -30,9 +31,9 @@ router = APIRouter()
 
 
 def _last_user_text(request: ChatCompletionRequest) -> str:
-    for m in reversed(request.messages):
-        if m.role == "user":
-            return m.content if isinstance(m.content, str) else ""
+    for message in reversed(request.messages):
+        if message.role == "user":
+            return message.content if isinstance(message.content, str) else ""
     return ""
 
 
@@ -54,18 +55,87 @@ async def _log_route(user_id: str, message: str, route: RouteResult, latency_ms:
         _log.warning("Router log write failed: %s", e)
 
 
-def _build_mws_request(request: ChatCompletionRequest) -> ChatCompletionRequest:
-    """Strip internal fields and inject system_prompt before forwarding to MWS."""
-    messages = list(request.messages)
+def _memory_updated_ts(memory: UserMemory) -> float:
+    return memory.updated_at.timestamp() if memory.updated_at else 0.0
 
-    # Prepend memory block as system message if provided
-    if request.system_prompt:
-        messages = [Message(role="system", content=request.system_prompt)] + messages
+
+def _select_memories(memories: list[UserMemory], limit: int = 8) -> list[UserMemory]:
+    if not memories:
+        return []
+
+    recent = sorted(
+        memories,
+        key=lambda memory: (float(memory.score or 0.0), _memory_updated_ts(memory)),
+        reverse=True,
+    )
+
+    selected: list[UserMemory] = []
+    seen: set[str] = set()
+
+    for memory in recent:
+        key = memory.key or ""
+        if key in seen:
+            continue
+        selected.append(memory)
+        seen.add(key)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _build_memory_block(memories: list[UserMemory], limit: int = 8) -> str | None:
+    selected = _select_memories(memories, limit=limit)
+    if not selected:
+        return None
+
+    lines = [
+        "User memory context. Use it when it helps answer more accurately.",
+        "Do not dump this list back to the user unless they ask for it directly.",
+    ]
+    lines.extend(
+        f"- [{memory.category or 'general'}] {memory.key}: {memory.value}"
+        for memory in selected
+    )
+    return "\n".join(lines)
+
+
+async def _load_memory_block(user_id: str) -> str | None:
+    if not user_id or user_id == "anonymous":
+        return None
+    try:
+        async with SessionLocal() as session:
+            rows = await session.scalars(
+                select(UserMemory)
+                .where(UserMemory.user_id == user_id)
+                .order_by(UserMemory.score.desc(), UserMemory.updated_at.desc())
+            )
+            memories = rows.all()
+        return _build_memory_block(memories)
+    except Exception as e:
+        _log.warning("Memory load skipped for user %s: %s", user_id, e)
+        return None
+
+
+def _combine_system_prompt(memory_block: str | None, system_prompt: str | None) -> str | None:
+    parts = [part.strip() for part in (memory_block, system_prompt) if part and part.strip()]
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
+def _build_mws_request(request: ChatCompletionRequest, memory_block: str | None = None) -> ChatCompletionRequest:
+    """Strip internal fields and inject server-side memory before forwarding to MWS."""
+    messages = list(request.messages)
+    combined_system_prompt = _combine_system_prompt(memory_block, request.system_prompt)
+
+    if combined_system_prompt:
+        messages = [Message(role="system", content=combined_system_prompt)] + messages
 
     return request.model_copy(update={
         "messages": messages,
-        "system_prompt": None,       # не отправляем в MWS
-        "conversation_id": None,     # не отправляем в MWS
+        "system_prompt": None,
+        "conversation_id": None,
+        "use_memory": None,
     })
 
 
@@ -74,9 +144,7 @@ async def chat_completions(
     request: ChatCompletionRequest,
     mws: MWSClient = Depends(get_mws_client),
     router_client: RouterClient = Depends(get_router_client),
-    settings: Settings = Depends(get_settings),
 ):
-    # Роутинг (не знает о system_prompt/conversation_id)
     t0 = time.monotonic()
     attachments: list[dict] = []
     message_text = _last_user_text(request)
@@ -85,17 +153,17 @@ async def chat_completions(
 
     user_id = getattr(request, "user", "anonymous") or "anonymous"
 
-    # Подставляем модель если клиент не указал явно
     if request.model in ("auto", "", None):
         request = request.model_copy(update={"model": route.model_id})
 
-    # Логируем (fire & forget)
     asyncio.create_task(_log_route(user_id, message_text, route, latency_ms))
 
-    # Строим запрос для MWS (с memory injection, без internal fields)
-    mws_request = _build_mws_request(request)
+    memory_block = None
+    if request.use_memory:
+        memory_block = await _load_memory_block(user_id)
 
-    # Форвардим в MWS
+    mws_request = _build_mws_request(request, memory_block=memory_block)
+
     if mws_request.stream:
         return StreamingResponse(
             mws.stream_chat(mws_request),

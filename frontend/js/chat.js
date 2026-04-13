@@ -144,7 +144,7 @@ async function doSend(src){
   isStreaming=true; setSendStop(true);
   abortCtrl=new AbortController();
   try {
-    const memBlock = isMemoryEnabled() ? buildMemoryBlock() : null;
+    await waitForMemorySync();
     const messages = [...currentMessages];
     if(injectedDocText){
       const last=messages[messages.length-1];
@@ -157,7 +157,7 @@ async function doSend(src){
       temperature: getTemperature(),
       user: currentUserId||'anonymous',
       conversation_id: currentConvId,
-      ...(memBlock && { system_prompt: memBlock }),
+      use_memory: true,
     };
     if(attachments.length) body.attachments=attachments;
 
@@ -227,7 +227,7 @@ async function doSend(src){
 
     currentMessages.push({role:'assistant',content:full});
     if(isHistoryEnabled()) fireSaveMessage('assistant', full, usedModelId || (selectedModel !== 'auto' ? selectedModel : null));
-    fireExtractMemory(full);
+    queueMemorySync(txt, full);
     setTimeout(()=>loadHistory(),800);
   } catch(e){
     document.getElementById('typing')?.remove();
@@ -276,6 +276,7 @@ async function sendVoiceMsg(id, chips, textContext){
       audio.onended=()=>URL.revokeObjectURL(url);
       if(transcript) currentMessages.push({role:'user',content:transcript});
       if(answer)     currentMessages.push({role:'assistant',content:answer});
+      if(transcript && answer) queueMemorySync(transcript, answer);
     } else {
       const data=await resp.json();
       const transcript=data.transcript||userLabel;
@@ -285,6 +286,7 @@ async function sendVoiceMsg(id, chips, textContext){
       toast('TTS недоступен — только текст','inf');
       currentMessages.push({role:'user',content:transcript});
       currentMessages.push({role:'assistant',content:answer});
+      queueMemorySync(transcript, answer);
     }
     setTimeout(()=>loadHistory(),800);
   } catch(e){
@@ -347,7 +349,7 @@ async function doVlmAnalyze(txt, attachments, ci){
     bbl.innerHTML=renderMd(answer);
     currentMessages.push({role:'assistant',content:answer});
     fireSaveMessage('assistant', answer, 'cotype-pro-vl-32b');
-    fireExtractMemory(answer);
+    queueMemorySync(txt || 'Опиши это изображение', answer);
     setTimeout(()=>loadHistory(),600);
   } catch(e){
     bbl.innerHTML=`<span style="color:var(--red)">⚠ Ошибка: ${esc(e.message)}</span>`;

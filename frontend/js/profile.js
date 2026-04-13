@@ -34,8 +34,12 @@ function saveProfile(){
   if(org) localStorage.setItem('mts-org',org); else localStorage.removeItem('mts-org');
   if(currentUserId){
     const h={'Content-Type':'application/json',...authHeaders()};
+    upsertMemoryFactLocally({key:'display_name',value:name,category:'preferences',score:1,updated_at:new Date().toISOString()});
     fetch(`${API}/memory/${currentUserId}`,{method:'POST',headers:h,body:JSON.stringify({key:'display_name',value:name,category:'preferences'})}).catch(()=>{});
-    if(org) fetch(`${API}/memory/${currentUserId}`,{method:'POST',headers:h,body:JSON.stringify({key:'organization',value:org,category:'preferences'})}).catch(()=>{});
+    if(org){
+      upsertMemoryFactLocally({key:'organization',value:org,category:'preferences',score:1,updated_at:new Date().toISOString()});
+      fetch(`${API}/memory/${currentUserId}`,{method:'POST',headers:h,body:JSON.stringify({key:'organization',value:org,category:'preferences'})}).catch(()=>{});
+    }
   }
   const btn=document.querySelector('#profTab-account .prof-save');
   if(btn){ const orig=btn.textContent; btn.textContent='✓ Сохранено'; setTimeout(()=>btn.textContent=orig,1800); }
@@ -105,6 +109,7 @@ function logoutProfile(){
   localStorage.removeItem('mts-user-id');
   localStorage.removeItem('mts-user-email');
   userMemory = [];
+  pendingMemorySync = null;
   setTimeout(()=>{
     const auth=document.getElementById('authScreen');
     if(auth){

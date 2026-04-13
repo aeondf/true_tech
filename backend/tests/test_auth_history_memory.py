@@ -147,7 +147,7 @@ class TestDBModels:
     def test_message_columns(self):
         from app.db.models import Base
         cols = {c.name for c in Base.metadata.tables["messages"].columns}
-        assert {"id", "conv_id", "role", "content", "model_used", "created_at"} <= cols
+        assert {"id", "conversation_id", "role", "content", "model_used", "created_at"} <= cols
 
     def test_user_memory_columns(self):
         from app.db.models import Base
@@ -200,6 +200,11 @@ class TestChatRequestModel:
         req = ChatCompletionRequest(model="m", messages=[])
         assert req.conversation_id is None
 
+    def test_use_memory_defaults_true(self):
+        from app.models.mws import ChatCompletionRequest
+        req = ChatCompletionRequest(model="m", messages=[])
+        assert req.use_memory is True
+
     def test_both_fields_together(self):
         from app.models.mws import ChatCompletionRequest, Message
         req = ChatCompletionRequest(
@@ -207,9 +212,11 @@ class TestChatRequestModel:
             messages=[Message(role="user", content="hi")],
             system_prompt="mem",
             conversation_id="conv-1",
+            use_memory=False,
         )
         assert req.system_prompt == "mem"
         assert req.conversation_id == "conv-1"
+        assert req.use_memory is False
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -256,6 +263,12 @@ class TestProxyMemoryInjection:
         built = _build_mws_request(req)
         assert built.conversation_id is None
 
+    def test_use_memory_cleared(self):
+        from app.api.v1.proxy import _build_mws_request
+        req = self._make_request()
+        built = _build_mws_request(req)
+        assert built.use_memory is None
+
     def test_message_count_with_injection(self):
         from app.api.v1.proxy import _build_mws_request
         from app.models.mws import Message
@@ -278,6 +291,29 @@ class TestProxyMemoryInjection:
         req = self._make_request(system_prompt=None, extra_messages=msgs)
         built = _build_mws_request(req)
         assert len(built.messages) == 1
+
+    def test_server_memory_combined_with_system_prompt(self):
+        from app.api.v1.proxy import _build_mws_request
+        req = self._make_request(system_prompt="manual ctx")
+        built = _build_mws_request(req, memory_block="memory ctx")
+        assert built.messages[0].role == "system"
+        assert "memory ctx" in built.messages[0].content
+        assert "manual ctx" in built.messages[0].content
+
+    def test_memory_block_built_without_keyword_trigger(self):
+        from app.api.v1.proxy import _build_memory_block
+
+        memory = MagicMock()
+        memory.key = "language"
+        memory.value = "Python"
+        memory.category = "preferences"
+        memory.score = 1.0
+        memory.updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        block = _build_memory_block([memory])
+
+        assert block is not None
+        assert "language: Python" in block
 
     def test_router_not_affected(self):
         """Роутер читает последнее user-сообщение — не system."""
@@ -654,7 +690,7 @@ class TestMemoryEndpoints:
         assert r.status_code == 204
 
     def test_memory_extract_accepted(self):
-        """POST /memory/extract всегда возвращает 202. Зависимости переопределены."""
+        """POST /memory/extract synchronously returns extracted memories."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from app.api.v1.auth_history import router
@@ -671,17 +707,23 @@ class TestMemoryEndpoints:
         app.dependency_overrides[get_settings] = lambda: mock_settings
 
         client = TestClient(app)
-        with patch("app.api.v1.auth_history.asyncio.create_task"):
+
+        async def fake_extract_and_save(*args, **kwargs):
+            return [{"key": "name", "value": "Alex", "category": "facts"}]
+
+        with patch("app.api.v1.auth_history._extract_and_save", new=fake_extract_and_save):
             r = client.post(
                 "/v1/memory/extract",
                 json={
                     "user_id": "user-1",
                     "conv_id": "conv-1",
+                    "user_message": "Меня зовут Алекс",
                     "assistant_message": "Я знаю что ты любишь Python и работаешь над MIREA AI",
                 },
             )
-        assert r.status_code == 202
-        assert r.json()["status"] == "accepted"
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+        assert r.json()["memories"][0]["key"] == "name"
 
 
 # ─────────────────────────────────────────────────────────────────

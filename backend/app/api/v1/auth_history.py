@@ -18,7 +18,6 @@ Routes:
   DELETE /memory/{user_id}/{key}
   POST   /memory/extract
 """
-import asyncio
 import json
 import logging
 import re
@@ -26,16 +25,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt as _bcrypt
-
 from fastapi import APIRouter, Depends, HTTPException, status
+from jose import jwt
 from pydantic import BaseModel
-from jose import JWTError, jwt
-from sqlalchemy import select, delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.database import SessionLocal
-from app.db.models import User, Conversation, Message, UserMemory
+from app.db.models import Conversation, Message, User, UserMemory
 from app.services.mws_client import MWSClient, get_mws_client
 
 _log = logging.getLogger(__name__)
@@ -44,8 +42,6 @@ router = APIRouter()
 
 ALGORITHM = "HS256"
 
-
-# ── Helpers ───────────────────────────────────────────────────────
 
 def _hash_password(password: str) -> str:
     return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
@@ -67,7 +63,148 @@ def _create_token(user_id: str, email: str, settings: Settings) -> str:
     )
 
 
-# ── Pydantic schemas ──────────────────────────────────────────────
+def _memory_to_dict(memory: UserMemory | dict) -> dict:
+    if isinstance(memory, dict):
+        updated_at = memory.get("updated_at")
+        if isinstance(updated_at, datetime):
+            updated_at = updated_at.isoformat()
+        return {
+            "key": memory.get("key"),
+            "value": memory.get("value"),
+            "category": memory.get("category", "general"),
+            "score": memory.get("score", 1.0),
+            "updated_at": updated_at,
+        }
+    return {
+        "key": memory.key,
+        "value": memory.value,
+        "category": memory.category,
+        "score": memory.score,
+        "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
+    }
+
+
+def _parse_memory_facts(raw: str) -> list[dict]:
+    match = re.search(r"\[.*?\]", raw or "", re.DOTALL)
+    if not match:
+        return []
+    try:
+        facts = json.loads(match.group())
+    except json.JSONDecodeError:
+        return []
+    return facts if isinstance(facts, list) else []
+
+
+def _normalize_memory_fact(fact: dict) -> dict | None:
+    if not isinstance(fact, dict):
+        return None
+    key = str(fact.get("key", "")).strip()
+    value = str(fact.get("value", "")).strip()
+    category = str(fact.get("category", "general")).strip() or "general"
+    if not key or not value:
+        return None
+    return {"key": key, "value": value, "category": category}
+
+
+def _build_memory_extraction_prompt(user_message: str | None, assistant_message: str) -> str:
+    parts: list[str] = []
+    if user_message:
+        parts.append(f"Сообщение пользователя:\n{user_message[:1200]}")
+    if assistant_message:
+        parts.append(f"Ответ ассистента:\n{assistant_message[:1800]}")
+    return "\n\n".join(parts).strip()
+
+
+async def _upsert_memory_fact(
+    session: AsyncSession,
+    user_id: str,
+    key: str,
+    value: str,
+    category: str,
+    score: float = 1.0,
+) -> dict:
+    now = datetime.utcnow()
+    existing = await session.scalar(
+        select(UserMemory).where(
+            UserMemory.user_id == user_id,
+            UserMemory.key == key,
+        )
+    )
+    if existing:
+        await session.execute(
+            update(UserMemory)
+            .where(UserMemory.user_id == user_id, UserMemory.key == key)
+            .values(value=value, category=category, updated_at=now)
+        )
+    else:
+        session.add(UserMemory(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            key=key,
+            value=value,
+            category=category,
+            score=score,
+            updated_at=now,
+        ))
+    return _memory_to_dict({
+        "key": key,
+        "value": value,
+        "category": category,
+        "score": score,
+        "updated_at": now,
+    })
+
+
+async def _extract_and_save(
+    user_id: str,
+    user_message: str | None,
+    assistant_message: str,
+    mws: MWSClient,
+) -> list[dict]:
+    """Ask LLM to extract user facts from the latest turn and persist them."""
+    prompt = _build_memory_extraction_prompt(user_message, assistant_message)
+    if len(prompt) < 30:
+        return []
+
+    system = (
+        "Ты система извлечения пользовательской памяти. Проанализируй последнее сообщение пользователя "
+        "и ответ ассистента, сохрани только устойчивые факты о пользователе. "
+        "Верни ТОЛЬКО JSON-массив объектов [{\"key\": str, \"value\": str, \"category\": str}] или []. "
+        "Категории: preferences, projects, facts, links. "
+        "Не сохраняй одноразовые просьбы, общие фразы, догадки и факты не о пользователе."
+    )
+
+    try:
+        raw = await mws.chat_simple(
+            model="llama-3.1-8b-instruct",
+            system=system,
+            user=prompt,
+        )
+        facts = _parse_memory_facts(raw)
+        if not facts:
+            return []
+
+        persisted: list[dict] = []
+        async with SessionLocal() as session:
+            for fact in facts:
+                normalized = _normalize_memory_fact(fact)
+                if not normalized:
+                    continue
+                persisted.append(
+                    await _upsert_memory_fact(
+                        session=session,
+                        user_id=user_id,
+                        key=normalized["key"],
+                        value=normalized["value"],
+                        category=normalized["category"],
+                    )
+                )
+            await session.commit()
+        return persisted
+    except Exception as e:
+        _log.debug("Memory extraction skipped: %s", e)
+        return []
+
 
 class AuthRequest(BaseModel):
     email: str
@@ -95,10 +232,9 @@ class MemoryUpsertRequest(BaseModel):
 class MemoryExtractRequest(BaseModel):
     user_id: str
     conv_id: str | None = None
+    user_message: str | None = None
     assistant_message: str
 
-
-# ── Auth ──────────────────────────────────────────────────────────
 
 @router.post("/auth/register")
 async def register(
@@ -156,16 +292,9 @@ async def change_password(body: ChangePasswordRequest):
 
 
 @router.get("/auth/me")
-async def get_me(
-    # Simple token check via query param or Authorization header
-    # Frontend sends token in Authorization: Bearer <token>
-):
-    # Minimal implementation — just return 200 if called
-    # Full middleware auth is out of scope per spec
+async def get_me():
     return {"status": "ok"}
 
-
-# ── History ───────────────────────────────────────────────────────
 
 @router.get("/history/{user_id}")
 async def list_conversations(user_id: str, limit: int = 50):
@@ -216,10 +345,8 @@ async def get_conversation(user_id: str, conv_id: str, limit: int = 200):
 @router.post("/history/{user_id}/{conv_id}", status_code=201)
 async def save_message(user_id: str, conv_id: str, body: MessageSaveRequest):
     async with SessionLocal() as session:
-        # Ensure conversation exists
         conv = await session.scalar(select(Conversation).where(Conversation.id == conv_id))
         if not conv:
-            # Auto-create conversation (title from first user message)
             title = body.content[:60] if body.role == "user" else "Новый чат"
             conv = Conversation(
                 id=conv_id,
@@ -230,7 +357,6 @@ async def save_message(user_id: str, conv_id: str, body: MessageSaveRequest):
             )
             session.add(conv)
         else:
-            # Touch updated_at
             await session.execute(
                 update(Conversation)
                 .where(Conversation.id == conv_id)
@@ -262,17 +388,18 @@ async def delete_conversation(user_id: str, conv_id: str):
         await session.commit()
 
 
-# ── Memory ────────────────────────────────────────────────────────
-
-@router.post("/memory/extract", status_code=202)
+@router.post("/memory/extract")
 async def extract_memory(
     body: MemoryExtractRequest,
     mws: MWSClient = Depends(get_mws_client),
-    settings: Settings = Depends(get_settings),
 ):
-    """Fire-and-forget: extract facts from assistant response and save to memory."""
-    asyncio.create_task(_extract_and_save(body.user_id, body.assistant_message, mws, settings))
-    return {"status": "accepted"}
+    memories = await _extract_and_save(
+        user_id=body.user_id,
+        user_message=body.user_message,
+        assistant_message=body.assistant_message,
+        mws=mws,
+    )
+    return {"status": "ok", "memories": memories}
 
 
 @router.get("/memory/{user_id}")
@@ -284,46 +411,19 @@ async def get_memory(user_id: str):
             .order_by(UserMemory.score.desc(), UserMemory.updated_at.desc())
         )
         mems = rows.all()
-        return {
-            "memories": [
-                {
-                    "key": m.key,
-                    "value": m.value,
-                    "category": m.category,
-                    "score": m.score,
-                    "updated_at": m.updated_at.isoformat() if m.updated_at else None,
-                }
-                for m in mems
-            ]
-        }
+        return {"memories": [_memory_to_dict(m) for m in mems]}
 
 
 @router.post("/memory/{user_id}", status_code=201)
 async def upsert_memory(user_id: str, body: MemoryUpsertRequest):
     async with SessionLocal() as session:
-        existing = await session.scalar(
-            select(UserMemory).where(
-                UserMemory.user_id == user_id,
-                UserMemory.key == body.key,
-            )
+        await _upsert_memory_fact(
+            session=session,
+            user_id=user_id,
+            key=body.key,
+            value=body.value,
+            category=body.category,
         )
-        if existing:
-            await session.execute(
-                update(UserMemory)
-                .where(UserMemory.user_id == user_id, UserMemory.key == body.key)
-                .values(value=body.value, category=body.category, updated_at=datetime.utcnow())
-            )
-        else:
-            mem = UserMemory(
-                id=str(uuid.uuid4()),
-                user_id=user_id,
-                key=body.key,
-                value=body.value,
-                category=body.category,
-                score=1.0,
-                updated_at=datetime.utcnow(),
-            )
-            session.add(mem)
         await session.commit()
         return {"status": "ok"}
 
@@ -338,73 +438,3 @@ async def delete_memory(user_id: str, key: str):
             )
         )
         await session.commit()
-
-
-async def _extract_and_save(user_id: str, message: str, mws: MWSClient, settings: Settings) -> None:
-    """Ask LLM to extract facts, then upsert into user_memory."""
-    if not message or len(message) < 30:
-        return
-
-    system = (
-        "Ты система извлечения фактов. Проанализируй ответ ассистента и найди факты о пользователе. "
-        "Верни ТОЛЬКО JSON-массив объектов [{\"key\": str, \"value\": str, \"category\": str}] или пустой массив []. "
-        "Категории: preferences, projects, facts, links. "
-        "Примеры фактов: язык программирования, имя пользователя, любимый фреймворк, текущий проект. "
-        "Если фактов нет — верни []."
-    )
-    user_prompt = f"Ответ ассистента:\n{message[:2000]}"
-
-    try:
-        raw = await asyncio.wait_for(
-            mws.chat_simple(
-                model="llama-3.1-8b-instruct",
-                system=system,
-                user=user_prompt,
-            ),
-            timeout=30,
-        )
-
-        # Extract JSON array from response
-        m = re.search(r"\[.*?\]", raw, re.DOTALL)
-        if not m:
-            return
-        facts = json.loads(m.group())
-        if not isinstance(facts, list):
-            return
-
-        async with SessionLocal() as session:
-            for fact in facts:
-                if not isinstance(fact, dict):
-                    continue
-                key = str(fact.get("key", "")).strip()
-                value = str(fact.get("value", "")).strip()
-                category = str(fact.get("category", "general")).strip()
-                if not key or not value:
-                    continue
-
-                existing = await session.scalar(
-                    select(UserMemory).where(
-                        UserMemory.user_id == user_id,
-                        UserMemory.key == key,
-                    )
-                )
-                if existing:
-                    await session.execute(
-                        update(UserMemory)
-                        .where(UserMemory.user_id == user_id, UserMemory.key == key)
-                        .values(value=value, category=category, updated_at=datetime.utcnow())
-                    )
-                else:
-                    session.add(UserMemory(
-                        id=str(uuid.uuid4()),
-                        user_id=user_id,
-                        key=key,
-                        value=value,
-                        category=category,
-                        score=1.0,
-                        updated_at=datetime.utcnow(),
-                    ))
-            await session.commit()
-
-    except Exception as e:
-        _log.debug("Memory extraction skipped: %s", e)
