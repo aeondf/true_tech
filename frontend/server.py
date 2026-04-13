@@ -13,13 +13,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=DIRECTORY, **kwargs)
 
     def do_GET(self):
-        # Serve index.html for root
         if self.path == '/' or self.path == '':
             self.path = '/index.html'
         super().do_GET()
 
     def end_headers(self):
-        # Allow CORS for API calls from the page
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Cache-Control', 'no-cache')
         super().end_headers()

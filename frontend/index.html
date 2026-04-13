@@ -2274,18 +2274,19 @@ async function handleF(files, chipsId){
     // Сохраняем File для последующей отправки
     chipFileMap.set(ch, f);
 
-    // Для документов — загружаем на сервер (RAG)
+    // Для документов — читаем содержимое в браузере (TXT) или просто помечаем как готово
     if(!isImg){
-      try {
-        const fd=new FormData(); fd.append('file',f); fd.append('user_id',currentUserId||'anonymous');
-        const r=await fetch(`${API}/files/upload`,{method:'POST',body:fd});
-        const st=ch.querySelector('.chip-status');
-        if(r.ok){
-          const d=await r.json(); ch.dataset.fileId=d.file_id;
+      const st=ch.querySelector('.chip-status');
+      if(ext==='txt'){
+        try {
+          const text=await f.text();
+          ch.dataset.textContent=text.slice(0,12000); // ограничиваем размер контекста
           if(st){ st.textContent='✓'; st.style.color='#22C55E'; }
-          toast(`Файл загружен: ${f.name}`,'ok',2000);
-        } else { if(st){ st.textContent='✗'; st.style.color='var(--red)'; } toast(`Ошибка загрузки ${f.name}`,'err'); }
-      } catch { const st=ch.querySelector('.chip-status'); if(st){ st.textContent='✗'; st.style.color='var(--red)'; } toast(`Ошибка: ${f.name}`,'err'); }
+        } catch { if(st){ st.textContent='✗'; st.style.color='var(--red)'; } }
+      } else {
+        // PDF/DOCX — сервер загрузки недоступен, помечаем готовым и отправим имя файла
+        if(st){ st.textContent='✓'; st.style.color='#22C55E'; }
+      }
     } else {
       // Для изображений — сразу читаем base64 (нет сервера загрузки)
       try {
@@ -2333,9 +2334,11 @@ async function doSend(src){
 
   // Собираем attachments из чипов
   const attachments=[];
+  let injectedDocText='';
   for(const ch of pendingFileChips){
     const att={name:ch.dataset.name, mime:ch.dataset.mime||'application/octet-stream'};
     if(ch.dataset.b64) att.data=ch.dataset.b64;         // base64 для изображений
+    if(ch.dataset.textContent) injectedDocText+=`\n\n[Содержимое файла ${esc(ch.dataset.name)}]:\n${ch.dataset.textContent}`;
     attachments.push(att);
   }
 
@@ -2348,6 +2351,11 @@ async function doSend(src){
     else            txt='Проанализируй прикреплённый файл';
   }
   if(!txt) return;
+
+  // Определяем image_gen в тексте (без агента) — широкий regex
+  const IMAGE_GEN_RE=/нарисуй|нарисуйте|сгенерируй\s*(изображение|картинку|арт|рисунок|фото|картин)?|создай\s*(изображение|картинку|рисунок|арт)|сделай\s*(изображение|картинку|рисунок)|draw\s|generate\s*(image|picture|art|photo|illustration)|imagine\s|paint\s/i;
+  const hasImageAtt = attachments.some(a=>a.data||(a.mime||'').startsWith('image/'));
+  const isImageGenRequest = !hasImageAtt && IMAGE_GEN_RE.test(txt);
 
   ta.value=''; ta.style.height='auto';
   if(chips) chips.innerHTML='';
@@ -2364,8 +2372,15 @@ async function doSend(src){
   ci.appendChild(typing); scrollBot();
 
   if(currentAgent?.id==='deepresearch'){ typing.remove(); await doDeepResearch(txt,ci); return; }
-  if(currentAgent?.id==='imagegen'){     typing.remove(); await doImageGen(txt,ci);     return; }
+  if(currentAgent?.id==='imagegen' || isImageGenRequest){ typing.remove(); await doImageGen(txt,ci); return; }
   if(currentAgent?.id==='websearch'){    typing.remove(); await doWebSearch(txt,ci);    return; }
+
+  // Для изображений — через VLM
+  if(hasImageAtt && !currentAgent?.id){
+    typing.remove();
+    await doVlmAnalyze(txt, attachments, ci);
+    return;
+  }
 
   // Save user message (fire-and-forget)
   fireSaveMessage('user', txt, null);
@@ -2373,9 +2388,15 @@ async function doSend(src){
   isStreaming=true;
   try {
     const memBlock = buildMemoryBlock();
+    // Инжектируем содержимое текстовых файлов в последнее сообщение
+    const messages = [...currentMessages];
+    if(injectedDocText){
+      const last=messages[messages.length-1];
+      if(last && last.role==='user') messages[messages.length-1]={...last, content: last.content+injectedDocText};
+    }
     const body={
       model: selectedModel,
-      messages: [...currentMessages],
+      messages,
       stream: true,
       user: currentUserId||'anonymous',
       conversation_id: currentConvId,
@@ -2553,6 +2574,35 @@ async function doDeepResearch(query,ci){
 }
 
 // ── Image Gen ────────────────────────────────
+async function doVlmAnalyze(txt, attachments, ci){
+  isStreaming=true;
+  const wrapEl=document.createElement('div'); wrapEl.className='msg';
+  wrapEl.innerHTML=`<div class="msg-av ai">AI</div><div class="msg-body"><div class="msg-meta"><span class="msg-sender">Vision</span></div><div class="msg-bbl" id="vlmBbl" style="line-height:1.6"><div style="color:var(--muted)">🔍 Анализирую изображение...</div></div></div>`;
+  ci.appendChild(wrapEl); scrollBot();
+  const bbl=document.getElementById('vlmBbl');
+  try {
+    const imgAtt=attachments.find(a=>a.data||(a.mime||'').startsWith('image/'));
+    if(!imgAtt){ bbl.innerHTML='<span style="color:var(--red)">⚠ Изображение не найдено</span>'; isStreaming=false; return; }
+    const imageUrl=imgAtt.data
+      ? `data:${imgAtt.mime||'image/jpeg'};base64,${imgAtt.data}`
+      : imgAtt.url||'';
+    const r=await fetch(`${API}/vlm/analyze`,{
+      method:'POST', headers:{'Content-Type':'application/json',...authHeaders()},
+      body:JSON.stringify({image_url:imageUrl, question:txt||'Опиши это изображение', model:'cotype-pro-vl-32b'})
+    });
+    const d=await r.json();
+    const answer=d.choices?.[0]?.message?.content || d.answer || d.description || d.error || 'Анализ завершён';
+    bbl.innerHTML=renderMd(answer);
+    currentMessages.push({role:'assistant',content:answer});
+    fireSaveMessage('assistant', answer, 'cotype-pro-vl-32b');
+    fireExtractMemory(answer);
+    setTimeout(()=>loadHistory(),600);
+  } catch(e){
+    bbl.innerHTML=`<span style="color:var(--red)">⚠ Ошибка: ${esc(e.message)}</span>`;
+    toast('Ошибка VLM','err');
+  } finally { isStreaming=false; scrollBot(); }
+}
+
 async function doImageGen(prompt,ci){
   isStreaming=true;
   const wrapEl=document.createElement('div'); wrapEl.className='msg';
@@ -2588,19 +2638,10 @@ async function doImageGen(prompt,ci){
           Скачать
         </a>`;
       currentMessages.push({role:'assistant',content:`[Сгенерированное изображение: ${caption}]`});
-      // Сохраняем в БД
-      if(currentConvId){
-        fetch(`${API}/history/${currentUserId||'anonymous'}/${currentConvId}/messages`,{
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({
-            messages:[
-              {role:'user', content:prompt},
-              {role:'assistant', content:`[Сгенерированное изображение: ${caption}]`}
-            ],
-            title: prompt.slice(0,80)
-          })
-        }).then(()=>setTimeout(()=>loadHistory(),400)).catch(()=>{});
-      }
+      // Сохраняем в БД через новый API
+      fireSaveMessage('user', prompt, null);
+      fireSaveMessage('assistant', `[Сгенерированное изображение: ${caption}]`, 'qwen-image');
+      setTimeout(()=>loadHistory(),600);
     } else if(d.fallback){
       // Сервис недоступен — показываем промпт и предлагаем попробовать через чат
       bbl.innerHTML=`<span style="color:var(--muted)">⚠ Сервис генерации изображений сейчас недоступен.</span><br><small style="color:var(--dim)">Промпт сохранён: ${esc(prompt)}</small>`;
