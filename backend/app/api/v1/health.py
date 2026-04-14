@@ -40,7 +40,7 @@ async def health():
     services = {
         "postgres":  db,
         "mws_api":   mws_ok,
-        "image_gen": "media-service (SD)" if db else False,  # зависит от media-service
+        "image_gen": "media-service (SD)" if db else False,
         "asr":       "mws(whisper-turbo-local)" if mws_ok else False,
     }
     status = "ok" if (db and mws_ok) else "degraded"

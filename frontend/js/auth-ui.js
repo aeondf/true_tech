@@ -196,19 +196,29 @@ function initSplash(options) {
   const { skip = false } = options || {};
   const splash = document.getElementById('splash');
   if (skip || !splash) {
-    splash?.remove();
+    if (splash) splash.style.display = 'none';
     _finishAuthBoot();
     return;
   }
 
-  const letters = ['sl-m', 'sl-t', 'sl-s'];
+  // Сброс состояния для повторного использования
+  splash.classList.remove('out');
+  splash.style.cssText = 'display:flex;opacity:1;';
+
+  const brain = document.getElementById('splash-brain');
+  brain?.classList.remove('show', 'glow');
+
+  ['sl-m', 'sl-t', 'sl-s'].forEach(id => document.getElementById(id)?.classList.remove('lit'));
+  document.getElementById('splash-sub')?.classList.remove('show');
+  document.getElementById('splash-letters')?.classList.remove('gather');
+
+  // Запуск анимации
   setTimeout(() => {
-    const brain = document.getElementById('splash-brain');
     brain?.classList.add('show');
     setTimeout(() => brain?.classList.add('glow'), 320);
   }, 120);
 
-  letters.forEach((id, index) => {
+  ['sl-m', 'sl-t', 'sl-s'].forEach((id, index) => {
     setTimeout(() => document.getElementById(id)?.classList.add('lit'), 240 + index * 120);
   });
   setTimeout(burstParticles, 760);
@@ -219,7 +229,8 @@ function initSplash(options) {
     document.getElementById('appRoot')?.classList.add('vis');
   }, 1560);
   setTimeout(() => {
-    splash.remove();
+    splash.style.display = 'none';
+    splash.classList.remove('out');
     _finishAuthBoot();
   }, 1880);
 }

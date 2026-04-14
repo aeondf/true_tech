@@ -1,5 +1,3 @@
-// API helpers: auth, memory sync, lightweight history persistence.
-
 const API = (() => {
   const override = window.MTS_API_BASE || localStorage.getItem('mts-api-base');
   if (override) return override.replace(/\/$/, '');

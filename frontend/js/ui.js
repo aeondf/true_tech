@@ -1,5 +1,3 @@
-// UI state helpers.
-
 const PANELS = ['chat', 'agents'];
 const PANEL_ORDER = { chat: 0, agents: 1 };
 const MOBILE_SIDEBAR_BREAKPOINT = 980;
@@ -146,10 +144,6 @@ function pickTemp(e, el, val, sub) {
 function getTemperature() {
   const value = parseFloat(localStorage.getItem('mts-temperature'));
   return isNaN(value) ? 0.7 : value;
-}
-
-function isMemoryEnabled() {
-  return true;
 }
 
 function isHistoryEnabled() {

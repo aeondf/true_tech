@@ -97,7 +97,7 @@
 }
 #splash-brain.show{opacity:1;transform:translateX(0);}
 #splash-brain svg{
-  width:78px;height:78px;stroke:#fff;
+  width:78px;height:78px;color:#fff;
   transition:filter .4s ease;
 }
 #splash-brain.glow svg{

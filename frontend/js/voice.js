@@ -1,6 +1,3 @@
-// ══ VOICE — toggleV(), startVoice(), stopVoice(), sendOrStopVoice(),
-//            fileToBase64(), handleF() ══
-
 let vOn={H:false,B:false};
 let vTimerInt={H:null,B:null};
 let vSeconds={H:0,B:0};

@@ -1,7 +1,3 @@
-// ══ CHAT — renderMd(), appendMsg(), updateMsgModel(), doSend(), sendVoiceMsg(),
-//           doDeepResearch(), doVlmAnalyze(), doImageGen(), downloadImg(),
-//           doWebSearch(), copyMsg(), likeMsg(), fillQ(), syncTA() ══
-
 function renderMd(raw){
   if(!raw) return '';
   let t=raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');

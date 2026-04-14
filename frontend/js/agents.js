@@ -1,5 +1,3 @@
-// ══ AGENTS — openAgModal(), closeAgModal(), selectAgent(), filterAgents() ══
-
 const AGENTS = [
   {id:'assistant', name:'Ассистент', desc:'Универсальный ИИ для любых задач', model:'mws-gpt-alpha',
    detail:'Универсальный ИИ-ассистент: от ответов на вопросы до анализа и генерации контента.',

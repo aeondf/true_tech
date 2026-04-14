@@ -16,7 +16,7 @@ from app.config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 TASK_MODELS: dict[str, str] = {
-    "text": "qwen2.5-72b-instruct",
+    "text": "mws-gpt-alpha",
     "code": "qwen3-coder-480b-a35b",
     "asr": "whisper-turbo-local",
     "vlm": "cotype-pro-vl-32b",

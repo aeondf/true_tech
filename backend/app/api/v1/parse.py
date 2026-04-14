@@ -33,7 +33,6 @@ async def parse_document(file: UploadFile = File(...)):
 
 
 def _extract(data: bytes, name: str, ct: str) -> str:
-    # PDF
     if name.endswith(".pdf") or "pdf" in ct:
         import pdfplumber
         text_parts = []
@@ -44,13 +43,11 @@ def _extract(data: bytes, name: str, ct: str) -> str:
                     text_parts.append(t)
         return "\n\n".join(text_parts)
 
-    # DOCX
     if name.endswith(".docx") or "wordprocessingml" in ct or "docx" in ct:
         from docx import Document
         doc = Document(io.BytesIO(data))
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
-    # XLSX / XLS
     if name.endswith((".xlsx", ".xls")) or "spreadsheet" in ct or "excel" in ct:
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -63,11 +60,9 @@ def _extract(data: bytes, name: str, ct: str) -> str:
                     rows.append("\t".join(cells))
         return "\n".join(rows)
 
-    # CSV
     if name.endswith(".csv") or "csv" in ct:
         text = data.decode("utf-8", errors="replace")
         reader = csv.reader(io.StringIO(text))
         return "\n".join("\t".join(row) for row in reader)
 
-    # TXT / MD / any text
     return data.decode("utf-8", errors="replace")

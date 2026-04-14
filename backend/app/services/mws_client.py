@@ -157,7 +157,6 @@ class MWSClient:
                     continue
 
     async def chat_simple(self, model: str, system: str, user: str) -> str:
-        """Single-turn chat that returns assistant text."""
         from app.models.mws import Message
 
         req = ChatCompletionRequest(

@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     MWS_API_KEY: str = ""
 
     # Models
-    MODEL_TEXT: str = "qwen2.5-72b-instruct"
+    MODEL_TEXT: str = "mws-gpt-alpha"
     MODEL_CODE: str = "qwen3-coder-480b-a35b"
     MODEL_LONG: str = "qwen2.5-72b-instruct"
     MODEL_RESEARCH_QUERY: str = "llama-3.1-8b-instruct"

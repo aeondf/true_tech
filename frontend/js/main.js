@@ -1,17 +1,12 @@
-// ══ MAIN — global state, DOMContentLoaded init, event listeners ══
-
-// ── Global state ──────────────────────────────
 let currentUserId     = null;
 let currentConvId     = null;
-let currentMessages   = [];   // [{role, content}]
+let currentMessages   = [];
 let currentAgent      = null;
 let isStreaming       = false;
-let selectedModel     = 'auto';   // actual API id
-let selectedModelName = 'Auto';   // display name
+let selectedModel     = 'auto';
+let selectedModelName = 'Auto';
 
-// ── Init ──────────────────────────────────────
 (async function init(){
-  localStorage.removeItem('mts-selected-model');
   const t=localStorage.getItem('mts-theme');
   if(t==='light'){ document.documentElement.setAttribute('data-theme','light'); document.getElementById('thTgl').classList.add('on'); }
   const l=localStorage.getItem('mts-lang')||'ru';
@@ -19,11 +14,9 @@ let selectedModelName = 'Auto';   // display name
   buildDD('mDDH'); buildDD('mDDB');
   syncSidebarUI();
 
-  // Settings persistence
   if(localStorage.getItem('mts-compact')==='1') document.body.classList.add('compact');
   if(localStorage.getItem('mts-enter-send')==='0'){ const tgl=document.querySelector('[data-setting="enterSend"]'); if(tgl) tgl.classList.remove('on'); }
 
-  // Auto-login: если токен уже есть в localStorage — пропускаем authScreen
   const savedToken = localStorage.getItem('mts-token');
   const savedUserId = localStorage.getItem('mts-user-id');
   const savedEmail = localStorage.getItem('mts-user-email');
@@ -57,7 +50,6 @@ let selectedModelName = 'Auto';   // display name
   }
 })();
 
-// ── Build agents grid ────────────────────────
 (function(){
   const g=document.getElementById('agGrid');
   AGENTS.forEach((a,i)=>{
@@ -69,7 +61,6 @@ let selectedModelName = 'Auto';   // display name
   });
 })();
 
-// ── BG floating words ─────────────────────────
 (function(){
   const phrases=['Искусственный интеллект','Artificial Intelligence','人工智能','Intelligence Artificielle','Künstliche Intelligenz','Inteligencia Artificial','人工知能','الذكاء الاصطناعي','Inteligência Artificial','인공지능','Intelligenza Artificiale','Yapay Zeka','Kunstmatige Intelligentie','Sztuczna Inteligencja','Artificiell Intelligens','Kunstig Intelligens','Tekoäly','Mesterséges Intelligencia','Artificiální Inteligence','Umelá Inteligencia','Τεχνητή Νοημοσύνη','कृत्रिम बुद्धिमत्ता','কৃত্রিম বুদ্ধিমত্তা','செயற்கை நுண்ணறிவு','Dirbtinis Intelektas'];
   const durations=[38,44,32,50,40,46,34,52,41,47,36,54,39,45,33,51,43,48,35,53,37,49,42,55,31,57,44,38,50,36];
@@ -87,7 +78,6 @@ let selectedModelName = 'Auto';   // display name
   }
 })();
 
-// ── Global event wiring ───────────────────────
 document.querySelectorAll('.rh').forEach(addRipple);
 document.querySelectorAll('.prof-save,.prof-logout').forEach(addRipple);
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeAll(); });

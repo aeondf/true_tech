@@ -1,6 +1,3 @@
-// ══ MODELS — isChatModel(), modelGroup(), modelDisplayName(), modelIcon(),
-//             fetchModels(), buildDD(), pickModel(), toggleMDD() ══
-
 const EXCLUDE_PREFIXES = ['bge-','whisper-','qwen-image','BAAI/','qwen3-embedding'];
 const CONVERSATION_MODEL_STORAGE_KEY = 'mts-conversation-models';
 

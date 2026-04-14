@@ -44,13 +44,6 @@ lint:
 format:
 	ruff format app tests
 
-# ── Ollama ───────────────────────────────────────────────────────
-pull-router:
-	docker compose exec ollama ollama pull qwen2.5:3b
-
-pull-vlm:
-	docker compose exec ollama ollama pull llava
-
 # ── Shortcuts ────────────────────────────────────────────────────
 shell:
 	docker compose exec backend bash

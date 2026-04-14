@@ -22,7 +22,6 @@ class VisionRequest(BaseModel):
 
 @router.post("/image/generate")
 async def generate_image(req: ImageGenRequest):
-    """MWS /v1/images/generations → URL картинки."""
     async with httpx.AsyncClient(timeout=120) as client:
         try:
             r = await client.post(
@@ -39,7 +38,6 @@ async def generate_image(req: ImageGenRequest):
 
 @router.post("/vlm/analyze")
 async def vlm_analyze(req: VisionRequest):
-    """MWS vision model — анализ картинки по URL."""
     async with httpx.AsyncClient(timeout=60) as client:
         try:
             r = await client.post(

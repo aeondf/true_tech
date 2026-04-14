@@ -37,17 +37,14 @@ async def voice_message(
 ):
     audio_bytes = await audio.read()
 
-    # 1. ASR
     try:
         transcript = await asr.transcribe(audio_bytes, filename=audio.filename or "audio.wav")
     except Exception as e:
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=503, content={"error": "ASR недоступен", "detail": str(e)})
 
-    # 2. Route (ignore ASR task_type — transcript is now just text)
     route = await router_client.route(message=transcript, attachments=[])
 
-    # 3. LLM (limit output for voice — short spoken answers)
     req = ChatCompletionRequest(
         model=route.model_id,
         messages=[
@@ -59,7 +56,6 @@ async def voice_message(
     llm_resp = await mws.chat(req)
     answer = llm_resp["choices"][0]["message"]["content"]
 
-    # 4. TTS (Silero → edge-tts → JSON fallback)
     try:
         import urllib.parse
         audio_out, mime = await tts.synthesize(answer[:800])
@@ -100,14 +96,11 @@ async def ws_voice(
         while True:
             audio_bytes = await websocket.receive_bytes()
 
-            # ASR
             transcript = await asr.transcribe(audio_bytes, filename="stream.wav")
             await websocket.send_json({"type": "transcript", "text": transcript})
 
-            # Route
             route = await router_client.route(message=transcript, attachments=[])
 
-            # LLM streaming tokens
             req = ChatCompletionRequest(
                 model=route.model_id,
                 messages=[Message(role="user", content=transcript)],
@@ -118,7 +111,6 @@ async def ws_voice(
                 await websocket.send_json({"type": "token", "text": token})
                 full_text += token
 
-            # TTS → send binary (fallback to done event if unavailable)
             if full_text:
                 try:
                     audio_out, _ = await tts.synthesize(full_text)

@@ -21,6 +21,19 @@ build/
 *.sqlite3
 *.db
 
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Test artifacts
+.coverage
+
+# Claude worktrees
+.claude/
+
 # Frontend / misc local artifacts
 node_modules/
 coverage/
