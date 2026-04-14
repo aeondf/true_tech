@@ -1,32 +1,54 @@
+name: true_tech
+
 services:
-  # ─── Backend (FastAPI AI Gateway) ──────────────────────────────
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    env_file: ./backend/.env
+    env_file:
+      - ./backend/.env
     environment:
-      # Override localhost URLs from .env with Docker service names
       DATABASE_URL: postgresql+asyncpg://user:pass@postgres:5432/mirea
       REDIS_URL: redis://redis:6379/0
-      ASR_URL: http://localhost:8001   # MWS whisper is primary; media-service not in stack
+      ASR_URL: http://localhost:8001
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request;
+          sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8000/docs", timeout=5).status == 200 else 1)
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
-  # ─── Frontend (nginx serving index.html) ───────────────────────
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     restart: unless-stopped
 
-  # ─── Database ───────────────────────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg16
     environment:
@@ -44,7 +66,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ─── Cache ──────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     ports:
