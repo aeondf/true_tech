@@ -666,8 +666,7 @@ async function doWebSearch(query, ci){
   ci.appendChild(el); scrollBot();
   const prog=document.getElementById('searchProg');
   try {
-    if(isHistoryEnabled()) fireSaveMessage('user', query, null);
-    const sr=await fetch(`${API}/tools/web-search`,{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({query,max_results:5})});
+    const sr=await fetch(`${API}/tools/web-search`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,max_results:5})});
     if(!sr.ok) throw new Error('Поиск недоступен');
     const sd=await sr.json();
     const results=sd.results||[];
@@ -691,7 +690,7 @@ async function doWebSearch(query, ci){
       {role:'system',content:'Ты — поисковый ассистент. Дай чёткий, структурированный ответ на основе найденных результатов. Цитируй источники в формате [N]. Отвечай на языке вопроса.'},
       {role:'user',content:`Вопрос: ${query}\n\nНайденные материалы:\n${context}`}
     ];
-    const resp=await fetch(`${API}/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({model:'auto',messages:synthMessages,stream:true,user:currentUserId||'anonymous'})});
+    const resp=await fetch(`${API}/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',messages:synthMessages,stream:true,user:currentUserId||'anonymous'})});
     if(!resp.ok) throw new Error('LLM недоступен');
     const reader=resp.body.getReader(); const dec=new TextDecoder();
     let full=''; let buf='';
@@ -707,7 +706,6 @@ async function doWebSearch(query, ci){
       }
     }
     currentMessages.push({role:'assistant',content:full});
-    if(isHistoryEnabled() && full) fireSaveMessage('assistant', full, 'web_search');
     setTimeout(()=>loadHistory(),800);
   } catch(e){ prog.innerHTML=`<span style="color:var(--red)">⚠ Ошибка: ${esc(e.message)}</span>`; toast('Поиск: ошибка','err'); }
   finally { isStreaming=false; }

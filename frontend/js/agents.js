@@ -52,6 +52,17 @@ const AGENT_SYSTEM_PROMPTS = {
 };
 
 function openAgModal(idx){
+  if(openDD){
+    document.getElementById(openDD)?.classList.remove('open');
+    openDD=null;
+    document.querySelectorAll('.m-pill').forEach(p=>p.setAttribute('aria-expanded','false'));
+  }
+  if(openPop){
+    document.getElementById(openPop)?.classList.remove('open');
+    openPop=null;
+    document.querySelectorAll('.sel-btn').forEach(b=>b.classList.remove('open'));
+  }
+  refreshOverlayState();
   const a=AGENTS[idx];
   document.getElementById('agmIcon').innerHTML=a.ic.replace('width="20" height="20"','width="26" height="26"');
   document.getElementById('agmName').textContent=a.name;
@@ -65,14 +76,14 @@ function openAgModal(idx){
   });
   document.getElementById('agmStart').onclick=()=>{ closeAgModal(); selectAgent(idx); };
   document.getElementById('agModal').classList.add('show');
-  document.getElementById('ov').classList.add('on');
+  refreshOverlayState();
   toast('Подробно: '+a.name,'inf',1600);
 }
 
 function closeAgModal(e){
   if(e&&e.target!==document.getElementById('agModal')) return;
   document.getElementById('agModal').classList.remove('show');
-  document.getElementById('ov').classList.remove('on');
+  refreshOverlayState();
 }
 
 function selectAgent(idx){

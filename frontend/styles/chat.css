@@ -7,6 +7,13 @@
   justify-content:center;padding:40px 24px 0;
   transition:opacity .3s ease,transform .3s ease;
 }
+.hero-copy{
+  display:flex;flex-direction:column;align-items:center;
+  width:min(100%,640px);
+}
+.hero-copy-min{
+  margin-bottom:18px;
+}
 .hero-logo{
   display:flex;align-items:center;gap:12px;margin-bottom:18px;
   animation:heroLogoIn .55s cubic-bezier(.34,1.56,.64,1) both;
@@ -17,6 +24,7 @@
 .hero-agent-icon{
   width:56px;height:56px;border-radius:15px;background:var(--s2);border:1px solid var(--border);
   display:flex;align-items:center;justify-content:center;
+  margin-bottom:18px;
   transition:transform .3s cubic-bezier(.34,1.56,.64,1),box-shadow .3s;
 }
 .hero-agent-icon:hover{transform:scale(1.08) rotate(-3deg);box-shadow:0 8px 28px rgba(0,0,0,.35);}
@@ -24,6 +32,15 @@
 .hero-title{
   font-size:26px;font-weight:800;letter-spacing:-.7px;line-height:1.15;text-align:center;
   animation:heroFadeUp .5s ease .1s both;
+}
+.hero-title-min{
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.16em;
+  line-height:1;
+  text-transform:uppercase;
+  color:var(--muted);
+  animation:heroFadeUp .35s ease .05s both;
 }
 .hero-title em{color:var(--red);font-style:normal;}
 .hero-sub{
@@ -59,8 +76,6 @@
   padding:16px 14px 10px;
 }
 .chat-scroll{flex:1;overflow-y:auto;padding-top:18px;scroll-behavior:smooth;display:none;}
-.chat-scroll::-webkit-scrollbar{width:4px;}
-.chat-scroll::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
 .chat-inner{max-width:680px;margin:0 auto;padding:0 22px 150px;}
 #panel-chat.has-messages .chat-hero{display:none;}
 #panel-chat.has-messages .chat-scroll{display:block;}
@@ -86,7 +101,7 @@
 
 /* ── INPUT BAR ── */
 .inp-zone-bottom{
-  position:absolute;bottom:0;left:0;right:0;padding:10px 22px 18px;
+  position:absolute;bottom:0;left:0;right:0;padding:10px 22px calc(18px + env(safe-area-inset-bottom,0px));
   background:linear-gradient(to top,var(--bg) 60%,transparent);
   pointer-events:none;display:none;
 }
@@ -96,7 +111,10 @@
   background:var(--s1);border:1.5px solid var(--border);border-radius:16px;
   overflow:visible;transition:border-color .15s,box-shadow .15s,background .25s;
 }
-.inp-bar:focus-within{border-color:var(--s3);}
+.inp-bar:focus-within{
+  border-color:rgba(255,255,255,.16);
+  box-shadow:0 0 0 1px rgba(255,255,255,.04),0 10px 24px rgba(0,0,0,.16);
+}
 .f-chips{display:flex;flex-wrap:wrap;gap:5px;padding:7px 12px 0;}
 .f-chip{
   display:flex;align-items:center;gap:5px;padding:3px 9px;
@@ -112,6 +130,7 @@
   font-size:13.5px;line-height:1.6;resize:none;min-height:22px;max-height:180px;
   font-family:inherit;transition:color .25s;
 }
+.inp-ta:focus-visible{outline:none;}
 .inp-ta::placeholder{color:var(--dim);}
 .inp-tools{
   display:flex;align-items:center;gap:4px;padding:4px 8px 8px;
@@ -193,7 +212,8 @@
   transition:opacity .18s ease;
 }
 .msg.u .msg-actions{right:auto;left:0;}
-.msg-body:hover .msg-actions{opacity:1;pointer-events:all;}
+.msg-body:hover .msg-actions,
+.msg-body:focus-within .msg-actions{opacity:1;pointer-events:all;}
 .msg-act{
   width:26px;height:26px;border-radius:7px;border:1px solid var(--border);
   background:var(--onyx);color:var(--muted);
@@ -221,3 +241,36 @@
 .hero-brain-btn svg{width:26px;height:26px;stroke:var(--icon);transition:stroke .2s;}
 .hero-brain-btn:hover svg{stroke:var(--muted);}
 @keyframes heroBrainIn{from{transform:scale(0) rotate(-18deg);opacity:0}60%{transform:scale(1.1) rotate(2deg)}to{transform:scale(1) rotate(0);opacity:1}}
+
+@media (hover:none){
+  .msg-actions{opacity:1;pointer-events:all;}
+}
+
+@media (max-width:980px){
+  .chat-hero{justify-content:flex-start;padding:18px 16px 0;}
+  .hero-copy{width:min(100%,720px);}
+  .hero-title{font-size:24px;}
+  .hero-sub{max-width:560px;}
+  .hero-inp-wrap{padding:0 0 22px;max-width:100%;}
+  .chat-hero .inp-bar{border-radius:18px;}
+  .chat-scroll{padding-top:6px;}
+  .chat-inner{padding:0 14px 156px;}
+  .inp-zone-bottom{padding:8px 12px calc(12px + env(safe-area-inset-bottom,0px));}
+}
+
+@media (max-width:720px){
+  .hero-copy-min{margin-bottom:14px;}
+  .hero-title-min{font-size:11px;letter-spacing:.14em;}
+  .hero-title{font-size:21px;line-height:1.12;}
+  .hero-sub{font-size:13px;margin-top:10px;}
+  .hero-chips{justify-content:flex-start;max-width:100%;margin-top:18px;}
+  .hero-chip{max-width:100%;}
+  .chat-hero .inp-ta{font-size:15px;}
+  .inp-row{padding:10px 10px 7px;}
+  .inp-tools{gap:6px;padding:4px 8px 8px;flex-wrap:wrap;}
+  .m-pill-wrap{order:2;}
+  .send{margin-left:auto;}
+  .msg{gap:9px;margin-bottom:16px;}
+  .msg-body{max-width:calc(100% - 36px);}
+  .msg-bbl{padding:10px 12px;font-size:13px;line-height:1.6;}
+}

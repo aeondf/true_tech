@@ -6,16 +6,17 @@ let currentConvId     = null;
 let currentMessages   = [];   // [{role, content}]
 let currentAgent      = null;
 let isStreaming       = false;
-let selectedModel     = 'auto';   // actual API id
-let selectedModelName = 'Авто';   // display name
+let selectedModel     = localStorage.getItem('mts-selected-model') || 'auto';   // actual API id
+let selectedModelName = selectedModel === 'auto' ? 'Auto' : selectedModel;   // display name
 
 // ── Init ──────────────────────────────────────
 (async function init(){
   const t=localStorage.getItem('mts-theme');
   if(t==='light'){ document.documentElement.setAttribute('data-theme','light'); document.getElementById('thTgl').classList.add('on'); }
   const l=localStorage.getItem('mts-lang')||'ru';
-  if(l!=='ru') applyLang(l);
+  applyLang(l);
   buildDD('mDDH'); buildDD('mDDB');
+  syncSidebarUI();
 
   // Settings persistence
   if(localStorage.getItem('mts-compact')==='1') document.body.classList.add('compact');
@@ -40,7 +41,7 @@ let selectedModelName = 'Авто';   // display name
       const org=localStorage.getItem('mts-org')||'';
       if(org) document.getElementById('profInpOrg').value=org;
       document.getElementById('authScreen').style.display='none';
-      initSplash();
+      initSplash({skip:true});
     } catch {
       authToken = null;
       currentUserId = null;
@@ -48,7 +49,7 @@ let selectedModelName = 'Авто';   // display name
       localStorage.removeItem('mts-user-id');
       localStorage.removeItem('mts-user-email');
       setTimeout(()=>document.getElementById('authEmail')?.focus(),400);
-      toast('Session expired, please sign in again','inf',3000);
+      toast(t('auth.sessionExpired','Session expired, please sign in again'),'inf',3000);
     }
   } else {
     setTimeout(()=>document.getElementById('authEmail')?.focus(),400);
@@ -89,3 +90,4 @@ let selectedModelName = 'Авто';   // display name
 document.querySelectorAll('.rh').forEach(addRipple);
 document.querySelectorAll('.prof-save,.prof-logout').forEach(addRipple);
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeAll(); });
+window.addEventListener('resize', syncSidebarUI);

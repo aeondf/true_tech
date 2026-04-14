@@ -20,7 +20,7 @@
 <div id="bgWords" aria-hidden="true"><div id="bgWords-inner"></div></div>
 
 <!-- ══ AUTH SCREEN ══ -->
-<div id="authScreen">
+<div id="authScreen" role="dialog" aria-modal="true" aria-labelledby="authTitleMain">
   <div class="auth-bg-orb"></div>
   <div class="auth-bg-orb"></div>
   <div class="auth-card">
@@ -30,11 +30,13 @@
 
     <!-- Step 1: Email -->
     <div id="authStep1" class="auth-step">
+      <span class="sr-only" id="authTitleMain">Auth</span>
       <div class="auth-title">Добро пожаловать</div>
       <div class="auth-sub">Введите вашу почту для входа</div>
       <div class="auth-inp-wrap">
+        <label class="sr-only" for="authEmail">Email</label>
         <input class="auth-inp" type="email" id="authEmail" placeholder="example@mail.ru"
-          autocomplete="email" onkeydown="if(event.key==='Enter')authSubmitEmail()">
+          autocomplete="email" data-i18n-placeholder="auth.emailPlaceholder" onkeydown="if(event.key==='Enter')authSubmitEmail()">
       </div>
       <button class="auth-btn rh" onclick="authSubmitEmail()">Продолжить</button>
     </div>
@@ -44,9 +46,10 @@
       <div class="auth-title" id="authStep2Title">Введите пароль</div>
       <div class="auth-sent-info">Аккаунт: <strong id="authEmailShow"></strong></div>
       <div class="auth-inp-wrap" style="position:relative">
+        <label class="sr-only" for="authPassword">Пароль</label>
         <input class="auth-inp" type="password" id="authPassword" placeholder="••••••••"
-          autocomplete="current-password" onkeydown="if(event.key==='Enter')authSubmitCode()">
-        <button onclick="togglePwdVis()" type="button" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;padding:4px;transition:color .15s" id="pwdEyeBtn">
+          autocomplete="current-password" data-i18n-placeholder="auth.passwordPlaceholder" onkeydown="if(event.key==='Enter')authSubmitCode()">
+        <button onclick="togglePwdVis()" type="button" aria-label="Показать пароль" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;padding:4px;transition:color .15s" id="pwdEyeBtn">
           <svg id="pwdEyeIcon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" viewBox="0 0 24 24">
             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
           </svg>
@@ -54,6 +57,7 @@
       </div>
       <div id="authConfirmWrap" style="display:none">
         <div class="auth-inp-wrap">
+          <label class="sr-only" for="authConfirmPwd">Confirm password</label>
           <input class="auth-inp" type="password" id="authConfirmPwd" placeholder="Повторите пароль"
             autocomplete="new-password" onkeydown="if(event.key==='Enter')authSubmitCode()">
         </div>
@@ -121,7 +125,7 @@
 <div class="app" id="appRoot">
 
 <!-- SIDEBAR -->
-<aside class="sb" id="sb">
+<aside class="sb" id="sb" aria-label="Основная навигация">
   <div class="sb-head">
     <img src="logo.svg" class="sb-logo" alt="MTS" width="22" height="22" onclick="if(col)expandSb()"/>
     <span class="sb-title"><em>MTS</em> AI Hub</span>
@@ -133,9 +137,9 @@
   </div>
 
   <div class="sb-nav">
-    <button class="ni rh act" id="nav-chat" onclick="sw('chat',this)">
+    <button class="ni rh act" id="nav-chat" onclick="newChat()">
       <svg class="ni-ic" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
-        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+        <path d="M12 5v14"/><path d="M5 12h14"/>
       </svg>
       <span class="ni-lb" data-i18n="nav.chat">Чат</span>
       <div class="ni-dot"></div>
@@ -187,27 +191,36 @@
 
 <!-- MAIN -->
 <main class="main">
+  <button class="mobile-menu-btn rh" id="mobileMenuBtn" type="button" onclick="toggleSb()" aria-controls="sb" aria-expanded="false" aria-label="Открыть меню">
+    <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" viewBox="0 0 24 24">
+      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  </button>
   <div class="panels">
 
     <!-- CHAT -->
     <div class="panel act" id="panel-chat">
       <div class="chat-hero" id="chatHero">
         <div id="heroAgentIcon" class="hero-agent-icon" style="display:none"></div>
+        <div class="hero-copy hero-copy-min">
+          <div class="hero-title hero-title-min" data-i18n="hero.minTitle">Новый чат</div>
+        </div>
         <div class="hero-inp-wrap">
           <div class="inp-bar" id="heroBar">
             <div class="f-chips" id="fChipsHero"></div>
             <div class="inp-row">
+              <label class="sr-only" for="inpHero">Chat prompt</label>
               <textarea class="inp-ta" id="inpHero" placeholder="Спросите что угодно..." rows="1"
-                oninput="syncTA(this)" onkeydown="handleK(event,'hero')"></textarea>
+                data-i18n-placeholder="chat.placeholder" oninput="syncTA(this)" onkeydown="handleK(event,'hero')"></textarea>
             </div>
             <div class="inp-tools">
-              <button class="btn-file rh" onclick="document.getElementById('fInH').click()" title="Прикрепить файл">
+              <button class="btn-file rh" type="button" onclick="document.getElementById('fInH').click()" title="Прикрепить файл" aria-label="Attach file">
                 <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" viewBox="0 0 24 24">
                   <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.66 5.65L9.64 16.2a2 2 0 01-2.83-2.83l8.49-8.48"/>
                 </svg>
               </button>
               <input type="file" id="fInH" style="display:none" multiple onchange="handleF(this.files,'fChipsHero')">
-              <button class="btn-voice rh" id="vBtnH" onclick="toggleV('H')" title="Голосовой ввод">
+              <button class="btn-voice rh" id="vBtnH" type="button" onclick="toggleV('H')" title="Голосовой ввод" aria-label="Voice input">
                 <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" viewBox="0 0 24 24">
                   <path d="M12 1a3 3 0 00-3 3v7a3 3 0 006 0V4a3 3 0 00-3-3z"/>
                   <path d="M5 10a7 7 0 0014 0"/>
@@ -218,14 +231,14 @@
               <span class="v-timer" id="vTimerH">00:00</span>
               <div class="it-gap"></div>
               <div class="m-pill-wrap">
-                <button class="m-pill rh" id="mPillH" onclick="toggleMDD(event,'mDDH','mPillH')" aria-expanded="false">
+                <button class="m-pill rh" id="mPillH" type="button" onclick="toggleMDD(event,'mDDH','mPillH')" aria-expanded="false" aria-label="Choose model">
                   <div class="mp-dot auto-dot" id="mpDotH"></div>
                   <span class="m-name-txt">Авто</span>
                   <span class="mp-c">▾</span>
                 </button>
                 <div class="m-dd" id="mDDH"></div>
               </div>
-              <button class="send rh" id="sendH" onclick="sendOrStopVoice('H')">
+              <button class="send rh" id="sendH" type="button" onclick="sendOrStopVoice('H')" aria-label="Send prompt">
                 <span class="ico-send"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></span>
                 <span class="ico-voice-stop"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24"><rect x="3" y="3" width="4" height="18" rx="1"/><rect x="10" y="6" width="4" height="12" rx="1"/><rect x="17" y="1" width="4" height="22" rx="1"/></svg></span>
               </button>
@@ -243,17 +256,18 @@
           <div class="inp-bar" id="bottomBar">
             <div class="f-chips" id="fChipsBot"></div>
             <div class="inp-row">
+              <label class="sr-only" for="inpBot">Chat prompt</label>
               <textarea class="inp-ta" id="inpBot" placeholder="Спросите что угодно..." rows="1"
-                oninput="syncTA(this)" onkeydown="handleK(event,'bot')"></textarea>
+                data-i18n-placeholder="chat.placeholder" oninput="syncTA(this)" onkeydown="handleK(event,'bot')"></textarea>
             </div>
             <div class="inp-tools">
-              <button class="btn-file rh" onclick="document.getElementById('fInB').click()" title="Прикрепить файл">
+              <button class="btn-file rh" type="button" onclick="document.getElementById('fInB').click()" title="Прикрепить файл" aria-label="Attach file">
                 <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" viewBox="0 0 24 24">
                   <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.66 5.65L9.64 16.2a2 2 0 01-2.83-2.83l8.49-8.48"/>
                 </svg>
               </button>
               <input type="file" id="fInB" style="display:none" multiple onchange="handleF(this.files,'fChipsBot')">
-              <button class="btn-voice rh" id="vBtnB" onclick="toggleV('B')" title="Голосовой ввод">
+              <button class="btn-voice rh" id="vBtnB" type="button" onclick="toggleV('B')" title="Голосовой ввод" aria-label="Voice input">
                 <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" viewBox="0 0 24 24">
                   <path d="M12 1a3 3 0 00-3 3v7a3 3 0 006 0V4a3 3 0 00-3-3z"/>
                   <path d="M5 10a7 7 0 0014 0"/>
@@ -264,14 +278,14 @@
               <span class="v-timer" id="vTimerB">00:00</span>
               <div class="it-gap"></div>
               <div class="m-pill-wrap">
-                <button class="m-pill rh" id="mPillB" onclick="toggleMDD(event,'mDDB','mPillB')" aria-expanded="false">
+                <button class="m-pill rh" id="mPillB" type="button" onclick="toggleMDD(event,'mDDB','mPillB')" aria-expanded="false" aria-label="Choose model">
                   <div class="mp-dot auto-dot" id="mpDotB"></div>
                   <span class="m-name-txt">Авто</span>
                   <span class="mp-c">▾</span>
                 </button>
                 <div class="m-dd" id="mDDB"></div>
               </div>
-              <button class="send rh" id="sendB" onclick="sendOrStopVoice('B')">
+              <button class="send rh" id="sendB" type="button" onclick="sendOrStopVoice('B')" aria-label="Send prompt">
                 <span class="ico-send"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></span>
                 <span class="ico-voice-stop"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24"><rect x="3" y="3" width="4" height="18" rx="1"/><rect x="10" y="6" width="4" height="12" rx="1"/><rect x="17" y="1" width="4" height="22" rx="1"/></svg></span>
               </button>
@@ -411,9 +425,9 @@
 </div><!-- /app -->
 
 <!-- ══ PROFILE OVERLAY ══ -->
-<div id="profileOverlay" onclick="closeProfileOuter(event)">
+<div id="profileOverlay" role="dialog" aria-modal="true" aria-labelledby="profName" onclick="closeProfileOuter(event)">
   <div class="prof-inner">
-    <button class="prof-close rh" onclick="closeProfile()">
+    <button class="prof-close rh" type="button" onclick="closeProfile()" aria-label="Close profile">
       <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" viewBox="0 0 24 24">
         <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
       </svg>
@@ -535,9 +549,30 @@
       <button class="prof-save rh" onclick="savePlan()">Применить тариф</button>
     </div>
   </div>
-  <div class="ov" id="ov" onclick="closeAll()"></div>
 </div>
 
+<div id="historyModal" class="history-modal" role="dialog" aria-modal="true" aria-labelledby="historyModalTitle" aria-hidden="true" onclick="if(event.target===this)closeHistoryModal()">
+  <div class="history-modal-card">
+    <button class="history-modal-close rh" type="button" onclick="closeHistoryModal()" aria-label="Close dialog">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" viewBox="0 0 24 24">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+    <div class="history-modal-eyebrow" id="historyModalEyebrow">История</div>
+    <div class="history-modal-title" id="historyModalTitle">Изменить название</div>
+    <div class="history-modal-copy" id="historyModalCopy">Обновите название, чтобы нужный диалог было легче найти позже.</div>
+    <div class="history-modal-field" id="historyModalField">
+      <label class="history-modal-label" for="historyModalInput">Название диалога</label>
+      <input class="history-modal-input" type="text" id="historyModalInput" maxlength="80" autocomplete="off">
+    </div>
+    <div class="history-modal-actions">
+      <button class="history-modal-btn history-modal-btn-ghost rh" type="button" id="historyModalCancel" onclick="closeHistoryModal()">Отмена</button>
+      <button class="history-modal-btn history-modal-btn-danger rh" type="button" id="historyModalConfirm">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div class="ov" id="ov" onclick="handleOverlayClick()"></div>
 <div id="toastRoot"></div>
 
 <!-- ══ SCRIPTS — dependency order: utils first, main last ══ -->

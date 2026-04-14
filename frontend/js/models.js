@@ -47,6 +47,14 @@ function modelDisplayName(id){
   return map[id] || id;
 }
 
+function autoModelLabel(){
+  return curLang==='ru' ? 'Авто' : 'Auto';
+}
+
+function autoModelSubtitle(){
+  return curLang==='ru' ? 'Оптимальная модель подбирается автоматически' : 'The best model is selected automatically';
+}
+
 function modelIcon(id){
   if(id.includes('coder')||id.includes('code'))
     return '<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>';
@@ -60,6 +68,16 @@ function modelIcon(id){
 }
 
 let CHAT_MODELS = []; // [{id, name, group, icon}]
+
+function syncModelSelectionUI(){
+  const isAuto = !selectedModel || selectedModel === 'auto';
+  const label = isAuto ? autoModelLabel() : (selectedModelName || modelDisplayName(selectedModel) || selectedModel);
+
+  document.querySelectorAll('.m-name-txt').forEach(el => el.textContent = label);
+  document.querySelectorAll('.mp-dot').forEach(el => {
+    el.className = 'mp-dot ' + (isAuto ? 'auto-dot' : 'ready-dot');
+  });
+}
 
 async function fetchModels(){
   try {
@@ -81,6 +99,19 @@ async function fetchModels(){
       {id:'llama-3.3-70b-instruct',name:'Llama 3.3 70B',  group:'Meta'},
     ].map(m=>({...m, icon: modelIcon(m.id)}));
   }
+  if(selectedModel !== 'auto'){
+    const exists = CHAT_MODELS.some(m => m.id === selectedModel);
+    if(exists) selectedModelName = modelDisplayName(selectedModel);
+    else {
+      selectedModel = 'auto';
+      selectedModelName = autoModelLabel();
+      localStorage.removeItem('mts-selected-model');
+    }
+  } else {
+    selectedModelName = autoModelLabel();
+  }
+
+  syncModelSelectionUI();
   buildDD('mDDH');
   buildDD('mDDB');
 }
@@ -103,8 +134,8 @@ function buildDD(ddId){
   const autoDiv = document.createElement('div');
   autoDiv.className = 'dd-opt' + (selectedModel==='auto'?' sel':'');
   autoDiv.dataset.search = 'авто auto';
-  autoDiv.innerHTML = `<div class="dd-ico"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div><div class="dd-info"><div class="dd-nm">Авто</div><div class="dd-sb">Оптимальная модель подбирается автоматически</div></div>${selectedModel==='auto'?'<span class="dd-chk">✓</span>':''}`;
-  autoDiv.onclick = e=>{ e.stopPropagation(); pickModel('auto','Авто',true); };
+  autoDiv.innerHTML = `<div class="dd-ico"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div><div class="dd-info"><div class="dd-nm">${autoModelLabel()}</div><div class="dd-sb">${autoModelSubtitle()}</div></div>${selectedModel==='auto'?'<span class="dd-chk">✓</span>':''}`;
+  autoDiv.onclick = e=>{ e.stopPropagation(); pickModel('auto',autoModelLabel(),true); };
   list.appendChild(autoDiv);
 
   const groups = {};
@@ -135,7 +166,7 @@ function buildDD(ddId){
   searchInp.oninput = ()=>{
     const q = searchInp.value.toLowerCase().trim();
     let anyVisible = false;
-    const autoMatch = !q || 'авто auto'.includes(q);
+  const autoMatch = !q || 'авто auto'.includes(q);
     autoDiv.classList.toggle('hidden', !autoMatch);
     groupEls.forEach(({sep, hdr, opts})=>{
       let grpAny = false;
@@ -154,23 +185,29 @@ function buildDD(ddId){
 
 function pickModel(id, name, isAuto){
   selectedModel = id;
-  selectedModelName = name;
-  document.querySelectorAll('.m-name-txt').forEach(el => el.textContent = isAuto ? 'Авто' : name);
-  document.querySelectorAll('.mp-dot').forEach(el=>{
-    el.className = 'mp-dot ' + (isAuto ? 'auto-dot' : 'ready-dot');
-  });
+  selectedModelName = isAuto ? autoModelLabel() : name;
+  if(isAuto) localStorage.removeItem('mts-selected-model');
+  else localStorage.setItem('mts-selected-model', id);
+
+  syncModelSelectionUI();
   buildDD('mDDH'); buildDD('mDDB');
-  closeAll();
-  toast((isAuto ? 'Авто — роутер выберет модель' : name + ' выбрана'), 'ok');
+  if(typeof closeFloatingOverlays === 'function') closeFloatingOverlays();
+  else closeAll();
+  toast(isAuto ? (curLang==='ru' ? 'Авто выберет модель под задачу' : 'Auto will choose the right model') : (curLang==='ru' ? `${name} выбрана` : `${name} selected`), 'ok');
 }
 
 let openDD=null;
 function toggleMDD(e,ddId,pillId){
   e.stopPropagation();
   const dd=document.getElementById(ddId); const pill=document.getElementById(pillId);
+  if(openPop){
+    document.getElementById(openPop)?.classList.remove('open');
+    openPop=null;
+    document.querySelectorAll('.sel-btn').forEach(btn => btn.classList.remove('open'));
+  }
   if(openDD&&openDD!==ddId){ document.getElementById(openDD)?.classList.remove('open'); document.querySelectorAll('.m-pill').forEach(p=>p.setAttribute('aria-expanded','false')); }
   const open=dd.classList.toggle('open');
   pill.setAttribute('aria-expanded',open);
   openDD=open?ddId:null;
-  document.getElementById('ov').classList.toggle('on',!!(openDD||openPop));
+  refreshOverlayState();
 }

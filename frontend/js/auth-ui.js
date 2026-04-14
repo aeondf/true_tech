@@ -3,15 +3,36 @@
 let authEmailVal = '';
 let regMode = false;
 
+function syncAuthModeTexts() {
+  const step1Title = document.querySelector('#authStep1 .auth-title');
+  const step1Sub = document.querySelector('#authStep1 .auth-sub');
+  const step1Btn = document.querySelector('#authStep1 .auth-btn');
+  const codeBtn = document.getElementById('authCodeBtn');
+  const step2Title = document.getElementById('authStep2Title');
+  const sentInfo = document.querySelector('#authStep2 .auth-sent-info');
+  const modeToggle = document.getElementById('authModeToggleText');
+  const backBtn = document.querySelector('.auth-back');
+  const confirmInput = document.getElementById('authConfirmPwd');
+  const pwdButton = document.getElementById('pwdEyeBtn');
+  const pwdInput = document.getElementById('authPassword');
+
+  if (step1Title) step1Title.textContent = t('auth.welcome', 'Welcome');
+  if (step1Sub) step1Sub.textContent = t('auth.subtitle', 'Enter your email to continue');
+  if (step1Btn) step1Btn.textContent = t('auth.continue', 'Continue');
+  if (step2Title) step2Title.textContent = t(regMode ? 'auth.createAccount' : 'auth.enterPassword');
+  if (sentInfo) sentInfo.innerHTML = `${t('auth.account', 'Account')}: <strong id="authEmailShow">${esc(authEmailVal)}</strong>`;
+  if (modeToggle) modeToggle.textContent = t(regMode ? 'auth.haveAccount' : 'auth.noAccount');
+  if (backBtn) backBtn.textContent = t('auth.changeEmail', '← Change email');
+  if (confirmInput) confirmInput.setAttribute('placeholder', t('auth.confirmPassword', 'Repeat password'));
+  if (codeBtn && !codeBtn.disabled) codeBtn.textContent = t(regMode ? 'auth.createAccount' : 'auth.signIn');
+  if (pwdButton) pwdButton.setAttribute('aria-label', pwdInput?.type === 'text' ? (curLang === 'ru' ? 'Скрыть пароль' : 'Hide password') : (curLang === 'ru' ? 'Показать пароль' : 'Show password'));
+}
+
 function toggleRegMode() {
   regMode = !regMode;
   document.getElementById('authConfirmWrap').style.display = regMode ? 'block' : 'none';
   document.getElementById('authConfirmPwd').value = '';
-  document.getElementById('authCodeBtn').textContent = regMode ? 'Create account' : 'Sign in';
-  document.getElementById('authStep2Title').textContent = regMode ? 'Create account' : 'Enter password';
-  document.getElementById('authModeToggleText').textContent = regMode
-    ? 'Already have an account? Sign in ->'
-    : 'No account yet? Register ->';
+  syncAuthModeTexts();
 }
 
 function authSubmitEmail() {
@@ -52,9 +73,7 @@ function authGoBack() {
     if (regMode) {
       regMode = false;
       document.getElementById('authConfirmWrap').style.display = 'none';
-      document.getElementById('authCodeBtn').textContent = 'Sign in';
-      document.getElementById('authStep2Title').textContent = 'Enter password';
-      document.getElementById('authModeToggleText').textContent = 'No account yet? Register ->';
+      syncAuthModeTexts();
     }
 
     const step1 = document.getElementById('authStep1');
@@ -68,16 +87,30 @@ function authGoBack() {
 function togglePwdVis() {
   const input = document.getElementById('authPassword');
   const icon = document.getElementById('pwdEyeIcon');
+  const button = document.getElementById('pwdEyeBtn');
   if (input.type === 'password') {
     input.type = 'text';
+    button?.setAttribute('aria-label', curLang === 'ru' ? 'Скрыть пароль' : 'Hide password');
     icon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/>';
   } else {
     input.type = 'password';
+    button?.setAttribute('aria-label', curLang === 'ru' ? 'Показать пароль' : 'Show password');
     icon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
   }
 }
 
-function _authSuccess(data) {
+function _finishAuthBoot() {
+  document.getElementById('appRoot')?.classList.add('vis');
+  fetchModels();
+  loadHistory();
+  loadMemory();
+  checkHealth();
+  currentConvId = uuid();
+}
+
+function _authSuccess(data, options) {
+  const { skipSplash = false } = options || {};
+
   authToken = data.token;
   currentUserId = data.user_id;
   localStorage.setItem('mts-token', authToken);
@@ -97,8 +130,8 @@ function _authSuccess(data) {
   document.getElementById('authScreen').classList.add('out');
   setTimeout(() => {
     document.getElementById('authScreen').style.display = 'none';
-    initSplash();
-  }, 680);
+    initSplash({ skip: skipSplash });
+  }, 260);
 }
 
 function authSubmitCode() {
@@ -115,7 +148,7 @@ function authSubmitCode() {
 
   if (regMode) {
     if (password.length < 6) {
-      toast('Password must contain at least 6 characters', 'err');
+      toast(t('auth.passwordMin', 'Password must contain at least 6 characters'), 'err');
       return;
     }
 
@@ -128,69 +161,78 @@ function authSubmitCode() {
       return;
     }
     if (password !== confirmPassword) {
-      toast('Passwords do not match', 'err');
+      toast(t('auth.passwordMismatch', 'Passwords do not match'), 'err');
       return;
     }
 
-    button.textContent = 'Creating...';
+    button.textContent = t('auth.creating', 'Creating...');
     button.disabled = true;
     apiAuthRegister(authEmailVal, password)
-      .then(_authSuccess)
+      .then(data => _authSuccess(data))
       .catch(error => {
-        button.textContent = 'Create account';
         button.disabled = false;
-        toast(error.message || 'Registration failed', 'err', 3000);
+        syncAuthModeTexts();
+        toast(error.message || t('auth.registrationFailed', 'Registration failed'), 'err', 3000);
       });
   } else {
-    button.textContent = 'Signing in...';
+    button.textContent = t('auth.signingIn', 'Signing in...');
     button.disabled = true;
     apiAuthLogin(authEmailVal, password)
-      .then(_authSuccess)
+      .then(data => _authSuccess(data))
       .catch(error => {
-        button.textContent = 'Sign in';
         button.disabled = false;
+        syncAuthModeTexts();
         const input = document.getElementById('authPassword');
         input.style.borderColor = 'var(--red)';
         input.focus();
         setTimeout(() => { input.style.borderColor = ''; }, 1800);
-        toast(error.message || 'Wrong password', 'err', 3000);
+        toast(error.message || t('auth.wrongPassword', 'Wrong password'), 'err', 3000);
       });
   }
 }
 
-function initSplash() {
+function initSplash(options) {
+  const { skip = false } = options || {};
+  const splash = document.getElementById('splash');
+  if (skip || !splash) {
+    splash?.remove();
+    _finishAuthBoot();
+    return;
+  }
+
   const letters = ['sl-m', 'sl-t', 'sl-s'];
   setTimeout(() => {
     const brain = document.getElementById('splash-brain');
     brain?.classList.add('show');
-    setTimeout(() => brain?.classList.add('glow'), 700);
-  }, 200);
+    setTimeout(() => brain?.classList.add('glow'), 320);
+  }, 120);
+
   letters.forEach((id, index) => {
-    setTimeout(() => document.getElementById(id)?.classList.add('lit'), 500 + index * 200);
+    setTimeout(() => document.getElementById(id)?.classList.add('lit'), 240 + index * 120);
   });
-  setTimeout(burstParticles, 1200);
-  setTimeout(() => document.getElementById('splash-sub')?.classList.add('show'), 1550);
-  setTimeout(() => document.getElementById('splash-letters')?.classList.add('gather'), 2100);
+  setTimeout(burstParticles, 760);
+  setTimeout(() => document.getElementById('splash-sub')?.classList.add('show'), 980);
+  setTimeout(() => document.getElementById('splash-letters')?.classList.add('gather'), 1240);
   setTimeout(() => {
-    document.getElementById('splash')?.classList.add('out');
+    splash.classList.add('out');
     document.getElementById('appRoot')?.classList.add('vis');
-  }, 2900);
+  }, 1560);
   setTimeout(() => {
-    document.getElementById('splash')?.remove();
-    fetchModels();
-    loadHistory();
-    loadMemory();
-    checkHealth();
-    currentConvId = uuid();
-  }, 3600);
+    splash.remove();
+    _finishAuthBoot();
+  }, 1880);
 }
 
 async function checkHealth() {
   try {
     const response = await fetch(`${API}/health`, { signal: AbortSignal.timeout(4000) });
     const data = await response.json();
-    toast(data.status === 'ok' ? 'Backend connected' : 'Backend is in degraded mode', data.status === 'ok' ? 'ok' : 'inf', 2500);
+    toast(
+      data.status === 'ok' ? t('health.ok', 'Backend connected') : t('health.degraded', 'Backend is running in degraded mode'),
+      data.status === 'ok' ? 'ok' : 'inf',
+      2500
+    );
   } catch {
-    toast('Backend is unavailable', 'err', 5000);
+    toast(t('health.down', 'Backend is unavailable'), 'err', 5000);
   }
 }

@@ -1,10 +1,6 @@
 /* ══ SETTINGS — #panel-settings, settings rows, sliders ══ */
 
 .st-scroll{flex:1;overflow-y:auto;padding:28px 0;}
-.st-scroll::-webkit-scrollbar{width:5px;}
-.st-scroll::-webkit-scrollbar-track{background:transparent;}
-.st-scroll::-webkit-scrollbar-thumb{background:var(--s3);border-radius:5px;}
-.st-scroll::-webkit-scrollbar-thumb:hover{background:var(--red);}
 .st-inner{max-width:540px;margin:0 auto;padding:0 26px;}
 .st-h{font-size:19px;font-weight:700;letter-spacing:-.35px;margin-bottom:26px;}
 .st-sec{margin-bottom:22px;}

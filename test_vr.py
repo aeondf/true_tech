@@ -96,7 +96,7 @@ def test_image_generation(model):
         "size": "1024x1024"
     }
     try:
-        r = requests.post(url, headers=HEADERS, json=data, timeout=600)
+        r = requests.post(url, headers=HEADERS, json=data, timeout=300)
         print(f"  📡 Статус: {r.status_code}")
         print("  📝 Ответ:")
         print("  " + "-" * 50)
