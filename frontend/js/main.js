@@ -6,11 +6,12 @@ let currentConvId     = null;
 let currentMessages   = [];   // [{role, content}]
 let currentAgent      = null;
 let isStreaming       = false;
-let selectedModel     = localStorage.getItem('mts-selected-model') || 'auto';   // actual API id
-let selectedModelName = selectedModel === 'auto' ? 'Auto' : selectedModel;   // display name
+let selectedModel     = 'auto';   // actual API id
+let selectedModelName = 'Auto';   // display name
 
 // ── Init ──────────────────────────────────────
 (async function init(){
+  localStorage.removeItem('mts-selected-model');
   const t=localStorage.getItem('mts-theme');
   if(t==='light'){ document.documentElement.setAttribute('data-theme','light'); document.getElementById('thTgl').classList.add('on'); }
   const l=localStorage.getItem('mts-lang')||'ru';

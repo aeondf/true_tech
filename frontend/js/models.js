@@ -2,6 +2,59 @@
 //             fetchModels(), buildDD(), pickModel(), toggleMDD() ══
 
 const EXCLUDE_PREFIXES = ['bge-','whisper-','qwen-image','BAAI/','qwen3-embedding'];
+const CONVERSATION_MODEL_STORAGE_KEY = 'mts-conversation-models';
+
+function readConversationModelState(){
+  try {
+    const raw = localStorage.getItem(CONVERSATION_MODEL_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+let conversationModelState = readConversationModelState();
+
+function writeConversationModelState(){
+  try {
+    const keys = Object.keys(conversationModelState);
+    if(!keys.length) localStorage.removeItem(CONVERSATION_MODEL_STORAGE_KEY);
+    else localStorage.setItem(CONVERSATION_MODEL_STORAGE_KEY, JSON.stringify(conversationModelState));
+  } catch {}
+}
+
+function normalizeModelId(id){
+  const value = String(id || '').trim();
+  return value && value !== 'auto' ? value : 'auto';
+}
+
+function resolveModelName(id){
+  const normalized = normalizeModelId(id);
+  return normalized === 'auto' ? autoModelLabel() : (modelDisplayName(normalized) || normalized);
+}
+
+function hasConversationModel(convId){
+  return Boolean(convId && Object.prototype.hasOwnProperty.call(conversationModelState, convId));
+}
+
+function getConversationModel(convId){
+  return hasConversationModel(convId) ? normalizeModelId(conversationModelState[convId]) : 'auto';
+}
+
+function setConversationModel(convId, modelId){
+  if(!convId) return;
+  const normalized = normalizeModelId(modelId);
+  if(normalized === 'auto') delete conversationModelState[convId];
+  else conversationModelState[convId] = normalized;
+  writeConversationModelState();
+}
+
+function removeConversationModel(convId){
+  if(!convId || !hasConversationModel(convId)) return;
+  delete conversationModelState[convId];
+  writeConversationModelState();
+}
 function isChatModel(id){
   return !EXCLUDE_PREFIXES.some(p => id.startsWith(p));
 }
@@ -69,9 +122,34 @@ function modelIcon(id){
 
 let CHAT_MODELS = []; // [{id, name, group, icon}]
 
+function applyModelSelection(id, options){
+  const opts = options || {};
+  const normalized = normalizeModelId(id);
+  const exists = normalized === 'auto' || !CHAT_MODELS.length || CHAT_MODELS.some(model => model.id === normalized);
+  selectedModel = exists ? normalized : 'auto';
+  selectedModelName = resolveModelName(selectedModel);
+
+  if(!opts.skipConversationSync && currentConvId) setConversationModel(currentConvId, selectedModel);
+
+  syncModelSelectionUI();
+  if(!opts.skipDropdownRebuild){
+    buildDD('mDDH');
+    buildDD('mDDB');
+  }
+}
+
+function restoreConversationModel(convId){
+  applyModelSelection(getConversationModel(convId), { skipConversationSync: true });
+}
+
+function resetConversationModel(convId){
+  if(convId) removeConversationModel(convId);
+  applyModelSelection('auto', { skipConversationSync: true });
+}
+
 function syncModelSelectionUI(){
   const isAuto = !selectedModel || selectedModel === 'auto';
-  const label = isAuto ? autoModelLabel() : (selectedModelName || modelDisplayName(selectedModel) || selectedModel);
+  const label = isAuto ? autoModelLabel() : (selectedModelName || resolveModelName(selectedModel));
 
   document.querySelectorAll('.m-name-txt').forEach(el => el.textContent = label);
   document.querySelectorAll('.mp-dot').forEach(el => {
@@ -99,21 +177,7 @@ async function fetchModels(){
       {id:'llama-3.3-70b-instruct',name:'Llama 3.3 70B',  group:'Meta'},
     ].map(m=>({...m, icon: modelIcon(m.id)}));
   }
-  if(selectedModel !== 'auto'){
-    const exists = CHAT_MODELS.some(m => m.id === selectedModel);
-    if(exists) selectedModelName = modelDisplayName(selectedModel);
-    else {
-      selectedModel = 'auto';
-      selectedModelName = autoModelLabel();
-      localStorage.removeItem('mts-selected-model');
-    }
-  } else {
-    selectedModelName = autoModelLabel();
-  }
-
-  syncModelSelectionUI();
-  buildDD('mDDH');
-  buildDD('mDDB');
+  applyModelSelection(selectedModel, { skipConversationSync: true });
 }
 
 function buildDD(ddId){
@@ -184,13 +248,7 @@ function buildDD(ddId){
 }
 
 function pickModel(id, name, isAuto){
-  selectedModel = id;
-  selectedModelName = isAuto ? autoModelLabel() : name;
-  if(isAuto) localStorage.removeItem('mts-selected-model');
-  else localStorage.setItem('mts-selected-model', id);
-
-  syncModelSelectionUI();
-  buildDD('mDDH'); buildDD('mDDB');
+  applyModelSelection(id);
   if(typeof closeFloatingOverlays === 'function') closeFloatingOverlays();
   else closeAll();
   toast(isAuto ? (curLang==='ru' ? 'Авто выберет модель под задачу' : 'Auto will choose the right model') : (curLang==='ru' ? `${name} выбрана` : `${name} selected`), 'ok');

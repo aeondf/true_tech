@@ -279,6 +279,7 @@ async function performDeleteConversation(convId) {
       return false;
     }
 
+    if (typeof removeConversationModel === 'function') removeConversationModel(convId);
     if (currentConvId === convId) newChat();
     loadHistory();
     toast(t('hist.deleted', 'Conversation deleted'), 'ok', 2000);
@@ -460,6 +461,7 @@ async function openConversation(convId) {
 
     const data = await response.json();
     const messages = data.messages || [];
+    if (typeof restoreConversationModel === 'function') restoreConversationModel(convId);
     const panel = document.getElementById('panel-chat');
     const chatInner = document.getElementById('chatInner');
     chatInner.innerHTML = '';
@@ -470,9 +472,11 @@ async function openConversation(convId) {
       messages.forEach(message => {
         if (message.role === 'system') return;
         currentMessages.push({ role: message.role, content: message.content });
-        appendMsg(message.role === 'user' ? 'user' : 'ai', message.content, message.role === 'assistant', null);
+        appendMsg(message.role === 'user' ? 'user' : 'ai', message.content, message.role === 'assistant', message.model_used || null);
       });
       scrollBot();
+    } else if (typeof restoreConversationModel === 'function') {
+      restoreConversationModel(convId);
     }
 
     queueHistoryMarqueeRefresh(120);
@@ -500,6 +504,7 @@ function newChat() {
   currentMessages = [];
   currentConvId = uuid();
   currentAgent = null;
+  if (typeof resetConversationModel === 'function') resetConversationModel(currentConvId);
   sw('chat', document.getElementById('nav-chat'));
   setTimeout(() => document.getElementById('inpHero')?.focus(), 50);
 }

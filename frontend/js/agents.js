@@ -101,12 +101,12 @@ function selectAgent(idx){
       const heroIcon=document.getElementById('heroAgentIcon');
       heroIcon.style.display='flex';
       heroIcon.innerHTML=a.ic.replace('width="20" height="20"','width="24" height="24"');
-      pickModel(a.model, modelDisplayName(a.model)||a.model, false);
       const panel=document.getElementById('panel-chat');
       panel.classList.remove('has-messages');
       document.getElementById('inpZoneBottom').style.display='none';
       document.getElementById('chatInner').innerHTML='';
       currentConvId=uuid();
+      pickModel(a.model, modelDisplayName(a.model)||a.model, false);
       const sysPrompt = AGENT_SYSTEM_PROMPTS[a.id];
       currentMessages = sysPrompt ? [{role:'system', content:sysPrompt}] : [];
       sw('chat',document.getElementById('nav-chat'));

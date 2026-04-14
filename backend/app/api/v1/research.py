@@ -289,11 +289,35 @@ async def _collect_sources(
     sources_by_url: dict[str, ResearchSource] = {}
     completed = 0
     timed_out = False
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + settings.RESEARCH_FETCH_TOTAL_TIMEOUT
+    pending = set(tasks)
 
     try:
-        async with asyncio.timeout(settings.RESEARCH_FETCH_TOTAL_TIMEOUT):
-            for task in asyncio.as_completed(tasks):
-                query, query_sources = await task
+        while pending:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                timed_out = True
+                logger.warning("Research fetch timeout hit for sub_queries=%r", sub_queries)
+                break
+
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                timed_out = True
+                logger.warning("Research fetch timeout hit for sub_queries=%r", sub_queries)
+                break
+
+            for task in done:
+                try:
+                    query, query_sources = task.result()
+                except Exception as exc:
+                    logger.debug("Research bundle failed: %s", exc)
+                    continue
+
                 completed += 1
 
                 for source in query_sources:
@@ -313,13 +337,10 @@ async def _collect_sources(
                         "sources_found": len(query_sources),
                     },
                 )
-    except TimeoutError:
-        timed_out = True
-        logger.warning("Research fetch timeout hit for sub_queries=%r", sub_queries)
     finally:
-        for pending in tasks:
-            if not pending.done():
-                pending.cancel()
+        for task in pending:
+            if not task.done():
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
     ordered_sources = sorted(

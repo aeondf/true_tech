@@ -16,10 +16,11 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 
+from app.api.v1.auth_history import AuthenticatedUser, get_current_user_optional
 from app.api.v1.research import _run_pipeline, run_research
 from app.config import Settings, get_settings
 from app.db.database import SessionLocal
@@ -139,11 +140,39 @@ def _build_mws_request(request: ChatCompletionRequest, memory_block: str | None 
         "system_prompt": None,
         "conversation_id": None,
         "use_memory": None,
+        "attachments": None,
     })
 
 
 def _is_auto_model_request(request: ChatCompletionRequest) -> bool:
     return request.model in ("auto", "", None)
+
+
+def _missing_bearer_token() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing bearer token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _resolve_user_id(
+    request: ChatCompletionRequest,
+    current_user: AuthenticatedUser | None,
+) -> str:
+    requested_user_id = str(getattr(request, "user", "") or "").strip() or "anonymous"
+
+    if requested_user_id != "anonymous":
+        if current_user is None:
+            raise _missing_bearer_token()
+        if requested_user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return current_user.id
+
+    if request.use_memory and current_user is not None:
+        return current_user.id
+
+    return "anonymous"
 
 
 def _build_research_response(result: dict) -> dict:
@@ -237,14 +266,23 @@ async def chat_completions(
     mws: MWSClient = Depends(get_mws_client),
     router_client: RouterClient = Depends(get_router_client),
     settings: Settings = Depends(get_settings),
+    current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
 ):
+    if current_user is not None and not isinstance(current_user, AuthenticatedUser):
+        requested_user_id = str(getattr(request, "user", "") or "").strip()
+        current_user = (
+            AuthenticatedUser(id=requested_user_id, email=None)
+            if requested_user_id and requested_user_id != "anonymous"
+            else None
+        )
+
+    user_id = _resolve_user_id(request, current_user)
     t0 = time.monotonic()
-    attachments: list[dict] = []
+    attachments = list(request.attachments or [])
     message_text = _last_user_text(request)
     route = await router_client.route(message=message_text, attachments=attachments)
     latency_ms = int((time.monotonic() - t0) * 1000)
 
-    user_id = getattr(request, "user", "anonymous") or "anonymous"
     auto_model_requested = _is_auto_model_request(request)
 
     if auto_model_requested:

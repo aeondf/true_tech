@@ -51,7 +51,8 @@
   animation:authFUp .5s ease .32s both;
 }
 .auth-step{width:100%;display:flex;flex-direction:column;align-items:center;}
-.auth-inp-wrap{width:100%;margin-bottom:14px;animation:authFUp .5s ease .38s both;}
+.auth-inp-wrap{position:relative;width:100%;margin-bottom:14px;animation:authFUp .5s ease .38s both;}
+#authConfirmWrap{width:100%;}
 .auth-inp{
   width:100%;padding:13px 16px;border-radius:12px;
   background:var(--s1);border:1.5px solid var(--border);

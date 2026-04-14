@@ -114,6 +114,21 @@ async def get_current_user(
     return _decode_token(credentials.credentials, settings)
 
 
+async def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    settings: Settings = Depends(get_settings),
+) -> AuthenticatedUser | None:
+    if not credentials:
+        return None
+    if credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return _decode_token(credentials.credentials, settings)
+
+
 def _require_user_access(user_id: str, current_user: AuthenticatedUser) -> None:
     if user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Forbidden")

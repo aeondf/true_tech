@@ -106,6 +106,7 @@ function _finishAuthBoot() {
   loadMemory();
   checkHealth();
   currentConvId = uuid();
+  if (typeof resetConversationModel === 'function') resetConversationModel(currentConvId);
 }
 
 function _authSuccess(data, options) {
