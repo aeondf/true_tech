@@ -16,7 +16,7 @@ from app.config import Settings, get_settings
 class WebSearchService:
     _SEARCH_URL = "https://html.duckduckgo.com/html/"
     _HEADERS = {
-        "User-Agent": "Mozilla/5.0 (compatible; MireaBot/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
 
     def __init__(self, *, timeout: int = 15) -> None:
@@ -86,7 +86,7 @@ class WebSearchService:
 
     async def search(self, query: str, max_results: int = 5) -> list[dict]:
         client = self._http()
-        response = await client.get(self._SEARCH_URL, params={"q": query})
+        response = await client.post(self._SEARCH_URL, data={"q": query})
         response.raise_for_status()
         return self._parse_results(response.text, max_results=max_results)
 

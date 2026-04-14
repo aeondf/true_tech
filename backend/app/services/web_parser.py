@@ -24,7 +24,7 @@ _TEXTUAL_CONTENT_TYPES = {
 
 class WebParserService:
     _HEADERS = {
-        "User-Agent": "Mozilla/5.0 (compatible; MireaBot/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
 
     def __init__(self, *, timeout: int = 15, max_body_bytes: int = 1_500_000) -> None:
