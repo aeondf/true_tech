@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     RESEARCH_MAX_SOURCE_TEXT_CHARS: int = 2000
     RESEARCH_MAX_SOURCES: int = 8
     RESEARCH_MAX_CONTEXT_CHARS: int = 12000
+    RESEARCH_MAX_ACTIVE_RUNS: int = 2
+    RESEARCH_SEARCH_THREADS: int = 4
+    RESEARCH_MAX_PAGE_BYTES: int = 1_500_000
 
     # Auth
     SECRET_KEY: str = "change-me-in-production-use-long-random-string"

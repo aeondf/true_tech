@@ -5,11 +5,13 @@ import json
 
 import pytest
 
+from app.api.v1 import research as research_module
 from app.api.v1 import proxy as proxy_module
 from app.api.v1.research import _run_pipeline, run_research
 from app.config import Settings
 from app.models.mws import ChatCompletionRequest, Message
 from app.services.router_client import RouteResult
+from app.services.web_parser import WebParserService
 
 
 def make_settings(**overrides) -> Settings:
@@ -29,6 +31,9 @@ def make_settings(**overrides) -> Settings:
         "RESEARCH_MAX_SOURCE_TEXT_CHARS": 400,
         "RESEARCH_MAX_SOURCES": 4,
         "RESEARCH_MAX_CONTEXT_CHARS": 3000,
+        "RESEARCH_MAX_ACTIVE_RUNS": 2,
+        "RESEARCH_SEARCH_THREADS": 2,
+        "RESEARCH_MAX_PAGE_BYTES": 500_000,
     }
     base.update(overrides)
     return Settings(**base)
@@ -95,6 +100,73 @@ class FakeRouterClient:
     async def route(self, message: str, attachments: list[dict]) -> RouteResult:
         self.calls.append((message, attachments))
         return self.route_result
+
+
+class FakeStreamResponse:
+    def __init__(
+        self,
+        *,
+        headers: dict[str, str] | None = None,
+        body_chunks: list[bytes] | None = None,
+        status_code: int = 200,
+        encoding: str = "utf-8",
+    ) -> None:
+        self.headers = headers or {}
+        self._body_chunks = body_chunks or []
+        self.status_code = status_code
+        self.encoding = encoding
+
+    async def __aenter__(self) -> "FakeStreamResponse":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    async def aiter_bytes(self):
+        for chunk in self._body_chunks:
+            yield chunk
+
+
+class FakeParserHttpClient:
+    def __init__(self, response: FakeStreamResponse) -> None:
+        self._response = response
+        self.is_closed = False
+
+    def stream(self, method: str, url: str) -> FakeStreamResponse:
+        return self._response
+
+
+class FakeWebParserService(WebParserService):
+    def __init__(self, response: FakeStreamResponse, *, max_body_bytes: int = 1_500_000) -> None:
+        super().__init__(timeout=5, max_body_bytes=max_body_bytes)
+        self._test_client = FakeParserHttpClient(response)
+
+    def _http(self):
+        return self._test_client
+
+
+class FakeDisconnectRequest:
+    def __init__(self) -> None:
+        self.disconnected = False
+
+    async def is_disconnected(self) -> bool:
+        return self.disconnected
+
+
+class DelayedSearchService(FakeSearchService):
+    def __init__(self, mapping: dict[str, list[dict]], delays: dict[str, float]) -> None:
+        super().__init__(mapping)
+        self.delays = delays
+
+    async def search(self, query: str, max_results: int = 5) -> list[dict]:
+        delay = self.delays.get(query, 0.0)
+        if delay:
+            await asyncio.sleep(delay)
+        return await super().search(query, max_results=max_results)
 
 
 def parse_sse(raw_event: str) -> tuple[str, dict]:
@@ -262,6 +334,7 @@ async def test_run_research_returns_error_for_empty_query() -> None:
     result = await run_research("", FakeMWS(), make_settings())
 
     assert result["status"] == "error"
+    assert result["error_code"] == "empty_query"
     assert result["sources"] == []
     assert result["stats"]["pages_fetched"] == 0
     assert result["message"]
@@ -282,10 +355,167 @@ async def test_run_research_surfaces_synthesis_timeout_with_partial_sources() ->
     )
 
     assert result["status"] == "error"
+    assert result["error_code"] == "synthesis_timeout"
     assert result["model"] == settings.MODEL_RESEARCH_SYNTHESIS
     assert result["sources"]
     assert result["stats"]["pages_fetched"] == 3
     assert result["stats"]["sources_used"] == 3
+
+
+@pytest.mark.asyncio
+async def test_run_research_returns_planner_timeout_error() -> None:
+    settings = make_settings(RESEARCH_SUBQUERY_TIMEOUT=1)
+
+    class SlowPlannerMWS(FakeMWS):
+        async def chat_simple(self, model: str, system: str, user: str) -> str:
+            self.calls.append({"model": model, "system": system, "user": user})
+            if "research planner" in system:
+                await asyncio.sleep(2)
+                return json.dumps(["slow-sub-query"])
+            return self.final_answer
+
+    result = await run_research(
+        "planner timeout",
+        SlowPlannerMWS(),
+        settings,
+        search_svc=FakeSearchService({}),
+        parser_svc=FakeParserService({}),
+    )
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "planner_timeout"
+    assert result["sources"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_research_returns_partial_sources_when_fetch_deadline_hits() -> None:
+    settings = make_settings(
+        RESEARCH_SUBQUERY_COUNT=2,
+        RESEARCH_FETCH_TOTAL_TIMEOUT=1,
+        RESEARCH_SEARCH_TIMEOUT=1,
+    )
+    search = DelayedSearchService(
+        {
+            "fast-search": [
+                {
+                    "title": "Fast source",
+                    "url": "https://example.test/fast",
+                    "snippet": "Fast snippet",
+                }
+            ],
+            "slow-search": [
+                {
+                    "title": "Slow source",
+                    "url": "https://example.test/slow",
+                    "snippet": "Slow snippet",
+                }
+            ],
+        },
+        delays={"slow-search": 2},
+    )
+    parser = FakeParserService(
+        {
+            "https://example.test/fast": {
+                "url": "https://example.test/fast",
+                "title": "Fast title",
+                "text": "Fast content " * 10,
+                "links": [],
+            },
+            "https://example.test/slow": {
+                "url": "https://example.test/slow",
+                "title": "Slow title",
+                "text": "Slow content " * 10,
+                "links": [],
+            },
+        }
+    )
+    mws = FakeMWS(sub_queries=["fast-search", "slow-search"], final_answer="Partial answer with [S1].")
+
+    result = await run_research(
+        "fetch timeout query",
+        mws,
+        settings,
+        search_svc=search,
+        parser_svc=parser,
+    )
+
+    assert result["status"] == "ok"
+    assert result["stats"]["timed_out"] is True
+    assert result["stats"]["queries_completed"] == 1
+    assert result["stats"]["pages_fetched"] == 1
+    assert result["stats"]["sources_used"] == 1
+    assert result["sources"][0]["url"] == "https://example.test/fast"
+
+
+@pytest.mark.asyncio
+async def test_web_parser_extracts_text_from_html() -> None:
+    response = FakeStreamResponse(
+        headers={"content-type": "text/html; charset=utf-8"},
+        body_chunks=[
+            (
+                b"<html><head><title>Alpha</title><script>ignored()</script></head>"
+                b"<body><h1>Hello</h1><p>World</p></body></html>"
+            )
+        ],
+    )
+    parser = FakeWebParserService(response)
+
+    parsed = await parser.parse("https://example.test/article")
+
+    assert parsed["title"] == "Alpha"
+    assert "Hello" in parsed["text"]
+    assert "World" in parsed["text"]
+    assert "ignored" not in parsed["text"]
+
+
+@pytest.mark.asyncio
+async def test_web_parser_rejects_unsupported_content_type() -> None:
+    parser = FakeWebParserService(
+        FakeStreamResponse(
+            headers={"content-type": "application/pdf"},
+            body_chunks=[b"%PDF-1.7"],
+        )
+    )
+
+    parsed = await parser.parse("https://example.test/file.pdf")
+
+    assert parsed["error"] == "unsupported content type: application/pdf"
+    assert parsed["text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_web_parser_rejects_large_content_length() -> None:
+    parser = FakeWebParserService(
+        FakeStreamResponse(
+            headers={
+                "content-type": "text/html",
+                "content-length": "2048",
+            },
+            body_chunks=[b"<html><body>too large</body></html>"],
+        ),
+        max_body_bytes=1024,
+    )
+
+    parsed = await parser.parse("https://example.test/oversized")
+
+    assert parsed["error"] == "response too large"
+    assert parsed["text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_web_parser_rejects_stream_body_over_limit() -> None:
+    parser = FakeWebParserService(
+        FakeStreamResponse(
+            headers={"content-type": "text/html"},
+            body_chunks=[b"a" * 700, b"b" * 700],
+        ),
+        max_body_bytes=1000,
+    )
+
+    parsed = await parser.parse("https://example.test/stream-too-large")
+
+    assert parsed["error"] == "response too large"
+    assert parsed["text"] == ""
 
 
 @pytest.mark.asyncio
@@ -310,6 +540,155 @@ async def test_run_pipeline_emits_progress_then_done_payload() -> None:
     assert events[-1][1]["sources"]
     assert any(event == "progress" and data.get("step") == 2 for event, data in events)
     assert any(event == "progress" and data.get("step") == 4 for event, data in events)
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_emits_run_id_in_initial_progress_event() -> None:
+    settings = make_settings()
+    planner_started = asyncio.Event()
+    planner_cancelled = asyncio.Event()
+
+    class SlowPlannerMWS(FakeMWS):
+        async def chat_simple(self, model: str, system: str, user: str) -> str:
+            self.calls.append({"model": model, "system": system, "user": user})
+            if "research planner" in system:
+                planner_started.set()
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    planner_cancelled.set()
+                    raise
+            return self.final_answer
+
+    mws = SlowPlannerMWS()
+    generator = _run_pipeline(
+        "run id query",
+        mws,
+        settings,
+        search_svc=FakeSearchService({}),
+        parser_svc=FakeParserService({}),
+        registry=research_module.ResearchStreamRegistry(),
+    )
+
+    first_event = parse_sse(await anext(generator))
+    await asyncio.wait_for(planner_started.wait(), timeout=1)
+    await generator.aclose()
+    await asyncio.wait_for(planner_cancelled.wait(), timeout=1)
+
+    assert first_event[0] == "progress"
+    assert first_event[1]["step"] == 0
+    assert first_event[1]["run_id"]
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_cancels_background_runner_when_client_closes() -> None:
+    settings = make_settings(RESEARCH_SUBQUERY_TIMEOUT=30)
+    planner_cancelled = asyncio.Event()
+
+    class SlowPlannerMWS(FakeMWS):
+        async def chat_simple(self, model: str, system: str, user: str) -> str:
+            self.calls.append({"model": model, "system": system, "user": user})
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                planner_cancelled.set()
+                raise
+            if "research planner" in system:
+                return json.dumps(["slow-sub-query"])
+            return self.final_answer
+
+    generator = _run_pipeline(
+        "cancel this research",
+        SlowPlannerMWS(),
+        settings,
+        search_svc=FakeSearchService({}),
+        parser_svc=FakeParserService({}),
+    )
+
+    first_event = await anext(generator)
+    assert parse_sse(first_event)[0] == "progress"
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await generator.aclose()
+    elapsed = loop.time() - started
+
+    assert elapsed < 0.5
+    await asyncio.wait_for(planner_cancelled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_cancels_runner_when_request_disconnects() -> None:
+    settings = make_settings(RESEARCH_SUBQUERY_TIMEOUT=30)
+    planner_started = asyncio.Event()
+    planner_cancelled = asyncio.Event()
+    request = FakeDisconnectRequest()
+    registry = research_module.ResearchStreamRegistry()
+
+    class SlowPlannerMWS(FakeMWS):
+        async def chat_simple(self, model: str, system: str, user: str) -> str:
+            self.calls.append({"model": model, "system": system, "user": user})
+            try:
+                planner_started.set()
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                planner_cancelled.set()
+                raise
+
+    generator = _run_pipeline(
+        "disconnect this research",
+        SlowPlannerMWS(),
+        settings,
+        request=request,
+        search_svc=FakeSearchService({}),
+        parser_svc=FakeParserService({}),
+        registry=registry,
+    )
+
+    first_event = await anext(generator)
+    assert parse_sse(first_event)[0] == "progress"
+
+    await asyncio.wait_for(planner_started.wait(), timeout=1)
+    request.disconnected = True
+    await asyncio.wait_for(planner_cancelled.wait(), timeout=1)
+    await generator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancel_research_endpoint_stops_active_run() -> None:
+    settings = make_settings(RESEARCH_SUBQUERY_TIMEOUT=30)
+    planner_started = asyncio.Event()
+    planner_cancelled = asyncio.Event()
+    registry = research_module.ResearchStreamRegistry()
+
+    class SlowPlannerMWS(FakeMWS):
+        async def chat_simple(self, model: str, system: str, user: str) -> str:
+            self.calls.append({"model": model, "system": system, "user": user})
+            try:
+                planner_started.set()
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                planner_cancelled.set()
+                raise
+
+    generator = _run_pipeline(
+        "cancel endpoint research",
+        SlowPlannerMWS(),
+        settings,
+        search_svc=FakeSearchService({}),
+        parser_svc=FakeParserService({}),
+        registry=registry,
+    )
+
+    first_event = parse_sse(await anext(generator))
+    run_id = first_event[1]["run_id"]
+    await asyncio.wait_for(planner_started.wait(), timeout=1)
+    payload = await research_module.cancel_research(run_id, registry=registry)
+
+    assert payload["status"] == "ok"
+    assert payload["run_id"] == run_id
+    await asyncio.wait_for(planner_cancelled.wait(), timeout=1)
+    await generator.aclose()
 
 
 @pytest.mark.asyncio
@@ -376,17 +755,23 @@ async def test_proxy_auto_route_streams_research_progress_for_stream_requests(
     async def fake_log_route(*args, **kwargs) -> None:
         return None
 
-    async def fake_pipeline(query: str, mws: FakeMWS, passed_settings: Settings):
+    async def fake_pipeline(
+        query: str,
+        mws: FakeMWS,
+        passed_settings: Settings,
+        request=None,
+    ):
         assert query == "research this topic"
         assert mws is fake_mws
         assert passed_settings is settings
         yield (
             'event: progress\n'
-            'data: {"step": 1, "message": "Planning"}\n\n'
+            'data: {"step": 0, "message": "Research run started.", "run_id": "run-123"}\n\n'
         )
         yield (
             'event: done\n'
             'data: {"answer": "Research answer with [S1].", '
+            '"run_id": "run-123", '
             '"model": "synthesis-model", '
             '"sources": [{"source_id": "S1", "title": "Title", "url": "https://example.test/1"}], '
             '"sub_queries": ["q1"], '
@@ -419,6 +804,7 @@ async def test_proxy_auto_route_streams_research_progress_for_stream_requests(
     assert response.media_type == "text/event-stream"
     assert '"research_event": "progress"' in payload
     assert '"research_event": "done"' in payload
+    assert '"run_id": "run-123"' in payload
     assert 'Research answer with [S1].' in payload
     assert 'data: [DONE]' in payload
 
@@ -465,3 +851,115 @@ async def test_proxy_keeps_manual_model_on_normal_chat_path(monkeypatch: pytest.
     assert payload["choices"][0]["message"]["content"] == "Manual model answer"
     assert len(fake_mws.chat_calls) == 1
     assert fake_mws.chat_calls[0].model == "manual-model"
+
+
+@pytest.mark.asyncio
+async def test_proxy_maps_research_errors_to_specific_http_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = make_settings()
+    fake_router = FakeRouterClient(
+        RouteResult("deep_research", settings.MODEL_RESEARCH_SYNTHESIS, 0.91, 2)
+    )
+    fake_mws = FakeMWS()
+
+    async def fake_run_research(query: str, mws: FakeMWS, passed_settings: Settings) -> dict:
+        assert query == "research this topic"
+        assert mws is fake_mws
+        assert passed_settings is settings
+        return {
+            "status": "error",
+            "message": "Timed out while synthesizing the final answer.",
+            "error_code": "synthesis_timeout",
+            "sub_queries": ["q1"],
+            "sources": [],
+            "stats": {"pages_fetched": 0, "sources_used": 0},
+            "model": settings.MODEL_RESEARCH_SYNTHESIS,
+        }
+
+    async def fake_log_route(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(proxy_module, "run_research", fake_run_research)
+    monkeypatch.setattr(proxy_module, "_log_route", fake_log_route)
+
+    request = ChatCompletionRequest(
+        model="auto",
+        messages=[Message(role="user", content="research this topic")],
+        stream=False,
+        use_memory=False,
+        user="user-4",
+    )
+
+    response = await proxy_module.chat_completions(
+        request,
+        mws=fake_mws,
+        router_client=fake_router,
+        settings=settings,
+    )
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 504
+    assert payload["error"]["code"] == "synthesis_timeout"
+    assert payload["error"]["message"] == "Timed out while synthesizing the final answer."
+
+
+@pytest.mark.asyncio
+async def test_proxy_streams_research_error_with_run_id_and_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = make_settings()
+    fake_router = FakeRouterClient(
+        RouteResult("deep_research", settings.MODEL_RESEARCH_SYNTHESIS, 0.93, 2)
+    )
+    fake_mws = FakeMWS()
+
+    async def fake_log_route(*args, **kwargs) -> None:
+        return None
+
+    async def fake_pipeline(
+        query: str,
+        mws: FakeMWS,
+        passed_settings: Settings,
+        request=None,
+    ):
+        assert query == "research this topic"
+        assert mws is fake_mws
+        assert passed_settings is settings
+        yield (
+            'event: progress\n'
+            'data: {"step": 0, "message": "Research run started.", "run_id": "run-error"}\n\n'
+        )
+        yield (
+            'event: error\n'
+            'data: {"message": "Timed out while generating research sub-queries.", '
+            '"error_code": "planner_timeout", '
+            '"run_id": "run-error", '
+            '"sources": [], '
+            '"sub_queries": [], '
+            '"stats": {"pages_fetched": 0, "sources_used": 0}}\n\n'
+        )
+
+    monkeypatch.setattr(proxy_module, "_log_route", fake_log_route)
+    monkeypatch.setattr(proxy_module, "_run_pipeline", fake_pipeline)
+
+    request = ChatCompletionRequest(
+        model="auto",
+        messages=[Message(role="user", content="research this topic")],
+        stream=True,
+        use_memory=False,
+        user="user-5",
+    )
+
+    response = await proxy_module.chat_completions(
+        request,
+        mws=fake_mws,
+        router_client=fake_router,
+        settings=settings,
+    )
+
+    chunks: list[str] = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+
+    payload = "".join(chunks)
+    assert '"research_event": "error"' in payload
+    assert '"code": "planner_timeout"' in payload
+    assert '"run_id": "run-error"' in payload
+    assert 'data: [DONE]' in payload

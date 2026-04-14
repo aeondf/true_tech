@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, HttpUrl
 
 from app.api.v1.auth_history import AuthenticatedUser, get_current_user
-from app.services.web_parser import WebParserService
-from app.services.web_search import WebSearchService
+from app.services.web_parser import WebParserService, get_web_parser_service
+from app.services.web_search import WebSearchService, get_web_search_service
 
 router = APIRouter()
 
@@ -24,9 +24,10 @@ class WebParseRequest(BaseModel):
 async def web_search(
     body: WebSearchRequest,
     current_user: AuthenticatedUser = Depends(get_current_user),
+    search_svc: WebSearchService = Depends(get_web_search_service),
 ):
     del current_user
-    results = await WebSearchService().search(body.query, max_results=body.max_results)
+    results = await search_svc.search(body.query, max_results=body.max_results)
     return {"query": body.query, "results": results}
 
 
@@ -34,6 +35,7 @@ async def web_search(
 async def web_parse(
     body: WebParseRequest,
     current_user: AuthenticatedUser = Depends(get_current_user),
+    parser_svc: WebParserService = Depends(get_web_parser_service),
 ):
     del current_user
-    return await WebParserService().parse(str(body.url), extract_links=body.extract_links)
+    return await parser_svc.parse(str(body.url), extract_links=body.extract_links)

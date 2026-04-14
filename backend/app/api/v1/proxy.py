@@ -16,7 +16,7 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 
@@ -193,6 +193,15 @@ def _build_research_response(result: dict) -> dict:
     }
 
 
+def _research_error_status(result: dict) -> int:
+    error_code = result.get("error_code")
+    if error_code == "empty_query":
+        return status.HTTP_400_BAD_REQUEST
+    if error_code in {"planner_timeout", "synthesis_timeout"}:
+        return status.HTTP_504_GATEWAY_TIMEOUT
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
+
+
 def _parse_research_sse(raw_event: str) -> tuple[str, dict]:
     event_type = ""
     data: dict = {}
@@ -217,8 +226,9 @@ async def _stream_research_as_chat(
     query: str,
     mws: MWSClient,
     settings: Settings,
+    request: Request | None = None,
 ):
-    async for raw_event in _run_pipeline(query, mws, settings):
+    async for raw_event in _run_pipeline(query, mws, settings, request=request):
         event_type, data = _parse_research_sse(raw_event)
         if event_type == "progress":
             yield _research_stream_chunk({
@@ -240,6 +250,7 @@ async def _stream_research_as_chat(
                     "delta": {"role": "assistant", "content": answer},
                     "finish_reason": "stop",
                 }],
+                "run_id": data.get("run_id"),
                 "answer": answer,
                 "sources": data.get("sources", []),
                 "sub_queries": data.get("sub_queries", []),
@@ -251,7 +262,11 @@ async def _stream_research_as_chat(
             yield _research_stream_chunk({
                 "research_event": "error",
                 "model": data.get("model") or "deep_research",
-                "error": {"message": data.get("message") or "Research failed"},
+                "error": {
+                    "message": data.get("message") or "Research failed",
+                    "code": data.get("error_code") or "research_failed",
+                },
+                "run_id": data.get("run_id"),
                 "sources": data.get("sources", []),
                 "sub_queries": data.get("sub_queries", []),
                 "stats": data.get("stats", {}),
@@ -263,6 +278,7 @@ async def _stream_research_as_chat(
 @router.post("/chat/completions")
 async def chat_completions(
     request: ChatCompletionRequest,
+    http_request: Request = None,
     mws: MWSClient = Depends(get_mws_client),
     router_client: RouterClient = Depends(get_router_client),
     settings: Settings = Depends(get_settings),
@@ -293,15 +309,23 @@ async def chat_completions(
     if route.task_type == "deep_research" and auto_model_requested:
         if request.stream:
             return StreamingResponse(
-                _stream_research_as_chat(message_text, mws, settings),
+                _stream_research_as_chat(message_text, mws, settings, request=http_request),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         result = await run_research(message_text, mws, settings)
         if result["status"] != "ok":
             return JSONResponse(
-                status_code=504,
-                content={"error": {"message": result["message"]}},
+                status_code=_research_error_status(result),
+                content={
+                    "error": {
+                        "message": result["message"],
+                        "code": result.get("error_code") or "research_failed",
+                    },
+                    "sources": result.get("sources", []),
+                    "sub_queries": result.get("sub_queries", []),
+                    "stats": result.get("stats", {}),
+                },
             )
         return JSONResponse(content=_build_research_response(result))
 

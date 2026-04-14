@@ -59,8 +59,18 @@ function stopVoice(id){
 function sendOrStopVoice(id){ if(vOn[id]) stopVoice(id); else doSend(id==='H'?'hero':'bot'); }
 
 let abortCtrl = null;
+window.activeResearchRunId = null;
 
 function stopGeneration(){
+  const runId = window.activeResearchRunId;
+  if(runId){
+    fetch(`${API}/research/${encodeURIComponent(runId)}/cancel`,{
+      method:'POST',
+      headers:{...authHeaders()},
+      keepalive:true,
+    }).catch(()=>{});
+    window.activeResearchRunId = null;
+  }
   if(abortCtrl){ abortCtrl.abort(); abortCtrl=null; }
 }
 

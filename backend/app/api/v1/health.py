@@ -10,6 +10,11 @@ router = APIRouter()
 settings = get_settings()
 
 
+@router.get("/health/live")
+async def health_live():
+    return {"status": "ok"}
+
+
 async def _ping(url: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=2) as c:

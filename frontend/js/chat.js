@@ -286,6 +286,7 @@ async function doSend(src){
       const reader=resp.body.getReader();
       const dec=new TextDecoder();
       let researchStream=false;
+      let researchTerminalSeen=false;
       while(true){
         const {done,value}=await reader.read();
         if(done) break;
@@ -299,6 +300,7 @@ async function doSend(src){
             const json=JSON.parse(data);
             if(json.research_event==='progress'){
               researchStream=true;
+              if(json.run_id) window.activeResearchRunId=json.run_id;
               const msg=formatResearchProgress(json);
               if(msg){
                 const div=document.createElement('div');
@@ -311,6 +313,8 @@ async function doSend(src){
             }
             if(json.research_event==='done'){
               researchStream=true;
+              researchTerminalSeen=true;
+              window.activeResearchRunId=null;
               usedModelId=json.model||usedModelId||'deep_research';
               updateMsgModel(aiEl,usedModelId);
               full=json.answer||json.choices?.[0]?.delta?.content||full;
@@ -321,6 +325,8 @@ async function doSend(src){
             }
             if(json.research_event==='error'){
               researchStream=true;
+              researchTerminalSeen=true;
+              window.activeResearchRunId=null;
               const message=json.error?.message||json.message||'Ошибка исследования';
               full='';
               bbl.innerHTML=`<span style="color:var(--red)">Error: ${esc(message)}</span>`;
@@ -336,6 +342,11 @@ async function doSend(src){
             if(delta){ full+=delta; bbl.innerHTML=renderMd(full); scrollBot(); }
           } catch {}
         }
+      }
+      if(researchStream && !researchTerminalSeen){
+        full='';
+        bbl.innerHTML='<span style="color:var(--red)">Research stopped before a final result.</span>';
+        scrollBot();
       }
       if(!usedModelId && selectedModel!=='auto' && !researchStream) updateMsgModel(aiEl, selectedModel);
       aiEl.querySelector('.copyBtn').onclick=()=>{ navigator.clipboard.writeText(full).then(()=>toast('Скопировано','ok',1500)); };
@@ -353,7 +364,7 @@ async function doSend(src){
       appendMsg('ai','⚠ Ошибка соединения: '+e.message,false,null);
       toast('Ошибка API: '+e.message,'err',4000);
     }
-  } finally { isStreaming=false; abortCtrl=null; setSendStop(false); }
+  } finally { isStreaming=false; abortCtrl=null; window.activeResearchRunId=null; setSendStop(false); }
 }
 
 async function sendVoiceMsg(id, chips, textContext){
@@ -479,6 +490,7 @@ async function doDeepResearch(query,ci){
   isStreaming=true;
   setSendStop(true);
   abortCtrl=new AbortController();
+  window.activeResearchRunId=null;
 
   const el=document.createElement('div');
   el.className='msg';
@@ -525,6 +537,7 @@ async function doDeepResearch(query,ci){
           const data=JSON.parse(line.slice(5).trim());
           if(evType==='done'){
             terminalSeen=true;
+            window.activeResearchRunId=null;
             finalAnswer=data.answer||'Research completed.';
             prog.innerHTML=renderMd(finalAnswer);
             appendResearchMeta(prog, data.sources, data.sub_queries, data.stats);
@@ -535,12 +548,14 @@ async function doDeepResearch(query,ci){
             scrollBot();
           } else if(evType==='error'){
             terminalSeen=true;
+            window.activeResearchRunId=null;
             const message=data.message||'Research failed';
             prog.innerHTML=`<span style="color:var(--red)">Error: ${esc(message)}</span>`;
             appendResearchMeta(prog, data.sources, data.sub_queries, data.stats);
             toast(`Deep Research: ${message}`,'err',4000);
             scrollBot();
           } else if(evType==='progress'){
+            if(data.run_id) window.activeResearchRunId=data.run_id;
             const msg=formatResearchProgress(data);
             if(msg){
               const div=document.createElement('div');
@@ -573,6 +588,7 @@ async function doDeepResearch(query,ci){
   } finally {
     isStreaming=false;
     abortCtrl=null;
+    window.activeResearchRunId=null;
     setSendStop(false);
   }
 }
