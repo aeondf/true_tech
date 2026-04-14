@@ -290,30 +290,36 @@ async def _collect_sources(
     completed = 0
     timed_out = False
 
+    async def collect_completed_tasks() -> None:
+        nonlocal completed
+        for task in asyncio.as_completed(tasks):
+            query, query_sources = await task
+            completed += 1
+
+            for source in query_sources:
+                previous = sources_by_url.get(source.url)
+                if previous is None or len(source.text) > len(previous.text):
+                    sources_by_url[source.url] = source
+
+            await _maybe_emit(
+                emit,
+                "progress",
+                {
+                    "step": 3,
+                    "query": query,
+                    "queries_completed": completed,
+                    "queries_total": len(sub_queries),
+                    "sources_total": len(sources_by_url),
+                    "sources_found": len(query_sources),
+                },
+            )
+
     try:
-        async with asyncio.timeout(settings.RESEARCH_FETCH_TOTAL_TIMEOUT):
-            for task in asyncio.as_completed(tasks):
-                query, query_sources = await task
-                completed += 1
-
-                for source in query_sources:
-                    previous = sources_by_url.get(source.url)
-                    if previous is None or len(source.text) > len(previous.text):
-                        sources_by_url[source.url] = source
-
-                await _maybe_emit(
-                    emit,
-                    "progress",
-                    {
-                        "step": 3,
-                        "query": query,
-                        "queries_completed": completed,
-                        "queries_total": len(sub_queries),
-                        "sources_total": len(sources_by_url),
-                        "sources_found": len(query_sources),
-                    },
-                )
-    except TimeoutError:
+        await asyncio.wait_for(
+            collect_completed_tasks(),
+            timeout=settings.RESEARCH_FETCH_TOTAL_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
         timed_out = True
         logger.warning("Research fetch timeout hit for sub_queries=%r", sub_queries)
     finally:

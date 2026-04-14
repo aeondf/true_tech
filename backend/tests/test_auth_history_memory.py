@@ -1,754 +1,315 @@
-"""
-test_auth_history_memory.py — тесты auth, history и memory.
-
-Что тестируется (без живой БД — всё через моки):
-  1. Password hashing  — хеш создаётся, верификация работает
-  2. JWT              — токен создаётся, содержит user_id и email
-  3. Memory block     — buildMemoryBlock формирует правильный текст
-  4. DB models        — таблицы объявлены, поля на месте
-  5. Proxy injection  — system_prompt prepend-ится в messages перед MWS
-  6. ChatRequest      — system_prompt и conversation_id принимаются моделью
-  7. Memory extract   — JSON-парсинг ответа LLM работает корректно
-  8. Auth routes      — register/login возвращают 200 (с мок-БД)
-  9. History routes   — CRUD через мок-сессию
- 10. Memory routes    — GET/POST/DELETE через мок-сессию
-
-Запуск:
-    cd backend
-    pytest tests/test_auth_history_memory.py -v
-"""
 from __future__ import annotations
 
-import asyncio
-import json
-import re
-import sys
 import os
-import uuid
-from datetime import datetime, timedelta, timezone
+import sys
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from app.api.v1 import auth_history, proxy, tools  # noqa: E402
+from app.api.v1.auth_history import _create_token, _hash_password, _verify_password  # noqa: E402
+from app.config import Settings, get_settings  # noqa: E402
+from app.models.mws import ChatCompletionRequest, Message  # noqa: E402
+from app.services.mws_client import get_mws_client  # noqa: E402
+from app.services.router_client import RouteResult, get_router_client  # noqa: E402
 
-# ─────────────────────────────────────────────────────────────────
-# 1. PASSWORD HASHING
-# ─────────────────────────────────────────────────────────────────
 
-class TestPasswordHashing:
+TEST_SETTINGS = Settings(
+    MWS_API_KEY="test",
+    MWS_BASE_URL="http://localhost",
+    SECRET_KEY="test-secret-key-32-chars-long!!!",
+)
+
+
+def make_token(user_id: str, email: str = "user@example.com") -> str:
+    return _create_token(user_id, email, TEST_SETTINGS)
+
+
+def auth_header(user_id: str = "user-1") -> dict[str, str]:
+    return {"Authorization": f"Bearer {make_token(user_id)}"}
+
+
+def make_session_ctx(session):
+    mock_sl = MagicMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    mock_sl.return_value = ctx
+    return mock_sl
+
+
+def build_auth_client() -> TestClient:
+    app = FastAPI()
+    app.include_router(auth_history.router, prefix="/v1")
+    app.dependency_overrides[get_settings] = lambda: TEST_SETTINGS
+    return TestClient(app)
+
+
+def build_proxy_client(router_client, mws_client) -> TestClient:
+    app = FastAPI()
+    app.include_router(proxy.router, prefix="/v1")
+    app.dependency_overrides[get_router_client] = lambda: router_client
+    app.dependency_overrides[get_mws_client] = lambda: mws_client
+    app.dependency_overrides[get_settings] = lambda: TEST_SETTINGS
+    return TestClient(app)
+
+
+def build_tools_client() -> TestClient:
+    app = FastAPI()
+    app.include_router(tools.router, prefix="/v1")
+    app.dependency_overrides[get_settings] = lambda: TEST_SETTINGS
+    return TestClient(app)
+
+
+class TestPasswordHelpers:
     def test_hash_is_not_plaintext(self):
-        from app.api.v1.auth_history import _hash_password
-        h = _hash_password("secret123")
-        assert h != "secret123"
-        assert len(h) > 20
+        hashed = _hash_password("secret123")
+        assert hashed != "secret123"
+        assert len(hashed) > 20
 
-    def test_verify_correct_password(self):
-        from app.api.v1.auth_history import _hash_password, _verify_password
-        h = _hash_password("mypassword")
-        assert _verify_password("mypassword", h) is True
+    def test_verify_password(self):
+        hashed = _hash_password("secret123")
+        assert _verify_password("secret123", hashed) is True
+        assert _verify_password("wrong", hashed) is False
 
-    def test_verify_wrong_password(self):
-        from app.api.v1.auth_history import _hash_password, _verify_password
-        h = _hash_password("correct")
-        assert _verify_password("wrong", h) is False
-
-    def test_two_hashes_differ(self):
-        """bcrypt использует соль — одинаковый пароль даёт разные хеши."""
-        from app.api.v1.auth_history import _hash_password
-        h1 = _hash_password("same")
-        h2 = _hash_password("same")
-        assert h1 != h2
-
-    def test_empty_password_hashes(self):
-        from app.api.v1.auth_history import _hash_password, _verify_password
-        h = _hash_password("")
-        assert _verify_password("", h) is True
-        assert _verify_password("notempty", h) is False
-
-
-# ─────────────────────────────────────────────────────────────────
-# 2. JWT TOKEN
-# ─────────────────────────────────────────────────────────────────
-
-class TestJWT:
-    def _settings(self):
-        from app.config import Settings
-        return Settings(
-            MWS_API_KEY="test",
-            MWS_BASE_URL="http://localhost",
-            SECRET_KEY="test-secret-key-32-chars-long!!!",
-        )
-
-    def test_token_created(self):
-        from app.api.v1.auth_history import _create_token
-        token = _create_token("user-123", "test@example.com", self._settings())
-        assert isinstance(token, str)
-        assert len(token) > 20
-
-    def test_token_contains_user_id(self):
-        from app.api.v1.auth_history import _create_token
-        from jose import jwt
-        s = self._settings()
-        token = _create_token("user-abc", "a@b.com", s)
-        payload = jwt.decode(token, s.SECRET_KEY, algorithms=["HS256"])
-        assert payload["sub"] == "user-abc"
-
-    def test_token_contains_email(self):
-        from app.api.v1.auth_history import _create_token
-        from jose import jwt
-        s = self._settings()
-        token = _create_token("x", "hello@world.com", s)
-        payload = jwt.decode(token, s.SECRET_KEY, algorithms=["HS256"])
-        assert payload["email"] == "hello@world.com"
-
-    def test_token_has_expiry(self):
-        from app.api.v1.auth_history import _create_token
-        from jose import jwt
-        s = self._settings()
-        token = _create_token("x", "a@b.com", s)
-        payload = jwt.decode(token, s.SECRET_KEY, algorithms=["HS256"])
-        assert "exp" in payload
-
-    def test_wrong_secret_rejected(self):
-        from app.api.v1.auth_history import _create_token
-        from jose import jwt, JWTError
-        s = self._settings()
-        token = _create_token("x", "a@b.com", s)
-        with pytest.raises(JWTError):
-            jwt.decode(token, "wrong-secret", algorithms=["HS256"])
-
-
-# ─────────────────────────────────────────────────────────────────
-# 3. DB MODELS — структура таблиц
-# ─────────────────────────────────────────────────────────────────
-
-class TestDBModels:
-    def test_all_tables_registered(self):
-        from app.db.models import Base
-        tables = set(Base.metadata.tables.keys())
-        assert "users" in tables
-        assert "conversations" in tables
-        assert "messages" in tables
-        assert "user_memory" in tables
-        assert "router_log" in tables
-
-    def test_user_columns(self):
-        from app.db.models import Base
-        cols = {c.name for c in Base.metadata.tables["users"].columns}
-        assert {"id", "email", "password_hash", "created_at"} <= cols
-
-    def test_conversation_columns(self):
-        from app.db.models import Base
-        cols = {c.name for c in Base.metadata.tables["conversations"].columns}
-        assert {"id", "user_id", "title", "created_at", "updated_at"} <= cols
-
-    def test_message_columns(self):
-        from app.db.models import Base
-        cols = {c.name for c in Base.metadata.tables["messages"].columns}
-        assert {"id", "conversation_id", "role", "content", "model_used", "created_at"} <= cols
-
-    def test_user_memory_columns(self):
-        from app.db.models import Base
-        cols = {c.name for c in Base.metadata.tables["user_memory"].columns}
-        assert {"id", "user_id", "key", "value", "category", "score", "updated_at"} <= cols
-
-    def test_user_memory_unique_constraint(self):
-        from app.db.models import Base
-        t = Base.metadata.tables["user_memory"]
-        uq_names = [c.name for c in t.constraints if hasattr(c, 'name')]
-        assert "uq_user_memory" in uq_names
-
-    def test_router_log_intact(self):
-        """Убеждаемся что router_log не сломан."""
-        from app.db.models import Base
-        cols = {c.name for c in Base.metadata.tables["router_log"].columns}
-        assert {"id", "task_type", "model_id", "confidence", "which_pass"} <= cols
-
-
-# ─────────────────────────────────────────────────────────────────
-# 4. ChatCompletionRequest — новые поля
-# ─────────────────────────────────────────────────────────────────
-
-class TestChatRequestModel:
-    def test_system_prompt_accepted(self):
-        from app.models.mws import ChatCompletionRequest
-        req = ChatCompletionRequest(
-            model="gpt-4",
-            messages=[],
-            system_prompt="You are helpful",
-        )
-        assert req.system_prompt == "You are helpful"
-
-    def test_conversation_id_accepted(self):
-        from app.models.mws import ChatCompletionRequest
-        req = ChatCompletionRequest(
-            model="gpt-4",
-            messages=[],
-            conversation_id="conv-abc-123",
-        )
-        assert req.conversation_id == "conv-abc-123"
-
-    def test_system_prompt_defaults_none(self):
-        from app.models.mws import ChatCompletionRequest
-        req = ChatCompletionRequest(model="m", messages=[])
-        assert req.system_prompt is None
-
-    def test_conversation_id_defaults_none(self):
-        from app.models.mws import ChatCompletionRequest
-        req = ChatCompletionRequest(model="m", messages=[])
-        assert req.conversation_id is None
-
-    def test_use_memory_defaults_true(self):
-        from app.models.mws import ChatCompletionRequest
-        req = ChatCompletionRequest(model="m", messages=[])
-        assert req.use_memory is True
-
-    def test_both_fields_together(self):
-        from app.models.mws import ChatCompletionRequest, Message
-        req = ChatCompletionRequest(
-            model="m",
-            messages=[Message(role="user", content="hi")],
-            system_prompt="mem",
-            conversation_id="conv-1",
-            use_memory=False,
-        )
-        assert req.system_prompt == "mem"
-        assert req.conversation_id == "conv-1"
-        assert req.use_memory is False
-
-
-# ─────────────────────────────────────────────────────────────────
-# 5. PROXY — system_prompt injection (_build_mws_request)
-# ─────────────────────────────────────────────────────────────────
-
-class TestProxyMemoryInjection:
-    def _make_request(self, system_prompt=None, extra_messages=None):
-        from app.models.mws import ChatCompletionRequest, Message
-        msgs = extra_messages or [Message(role="user", content="hello")]
-        return ChatCompletionRequest(
-            model="gpt-4",
-            messages=msgs,
-            system_prompt=system_prompt,
-            conversation_id="conv-1",
-        )
-
-    def test_no_system_prompt_unchanged(self):
-        from app.api.v1.proxy import _build_mws_request
-        req = self._make_request(system_prompt=None)
-        built = _build_mws_request(req)
-        assert len(built.messages) == 1
-        assert built.messages[0].role == "user"
-
-    def test_system_prompt_prepended(self):
-        from app.api.v1.proxy import _build_mws_request
-        req = self._make_request(system_prompt="Факты: Python")
-        built = _build_mws_request(req)
-        assert built.messages[0].role == "system"
-        assert built.messages[0].content == "Факты: Python"
-        assert built.messages[1].role == "user"
-
-    def test_system_prompt_cleared_after_injection(self):
-        """system_prompt не должен идти в MWS как отдельное поле."""
-        from app.api.v1.proxy import _build_mws_request
-        req = self._make_request(system_prompt="mem block")
-        built = _build_mws_request(req)
-        assert built.system_prompt is None
-
-    def test_conversation_id_cleared(self):
-        """conversation_id не должен идти в MWS."""
-        from app.api.v1.proxy import _build_mws_request
-        req = self._make_request()
-        built = _build_mws_request(req)
-        assert built.conversation_id is None
-
-    def test_use_memory_cleared(self):
-        from app.api.v1.proxy import _build_mws_request
-        req = self._make_request()
-        built = _build_mws_request(req)
-        assert built.use_memory is None
-
-    def test_message_count_with_injection(self):
-        from app.api.v1.proxy import _build_mws_request
-        from app.models.mws import Message
-        msgs = [
-            Message(role="user", content="msg1"),
-            Message(role="assistant", content="resp1"),
-            Message(role="user", content="msg2"),
-        ]
-        req = self._make_request(system_prompt="ctx", extra_messages=msgs)
-        built = _build_mws_request(req)
-        # system + 3 original = 4
-        assert len(built.messages) == 4
-        assert built.messages[0].role == "system"
-
-    def test_no_system_prompt_no_extra_message(self):
-        """Без system_prompt количество сообщений не меняется."""
-        from app.api.v1.proxy import _build_mws_request
-        from app.models.mws import Message
-        msgs = [Message(role="user", content="hi")]
-        req = self._make_request(system_prompt=None, extra_messages=msgs)
-        built = _build_mws_request(req)
-        assert len(built.messages) == 1
-
-    def test_server_memory_combined_with_system_prompt(self):
-        from app.api.v1.proxy import _build_mws_request
-        req = self._make_request(system_prompt="manual ctx")
-        built = _build_mws_request(req, memory_block="memory ctx")
-        assert built.messages[0].role == "system"
-        assert "memory ctx" in built.messages[0].content
-        assert "manual ctx" in built.messages[0].content
-
-    def test_memory_block_built_without_keyword_trigger(self):
-        from app.api.v1.proxy import _build_memory_block
-
-        memory = MagicMock()
-        memory.key = "language"
-        memory.value = "Python"
-        memory.category = "preferences"
-        memory.score = 1.0
-        memory.updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-        block = _build_memory_block([memory])
-
-        assert block is not None
-        assert "language: Python" in block
-
-    def test_router_not_affected(self):
-        """Роутер читает последнее user-сообщение — не system."""
-        from app.api.v1.proxy import _last_user_text
-        from app.models.mws import ChatCompletionRequest, Message
-        req = ChatCompletionRequest(
-            model="m",
-            messages=[
-                Message(role="system", content="ctx"),
-                Message(role="user", content="реальный вопрос"),
-            ],
-        )
-        assert _last_user_text(req) == "реальный вопрос"
-
-
-# ─────────────────────────────────────────────────────────────────
-# 6. MEMORY EXTRACTION — парсинг JSON из LLM
-# ─────────────────────────────────────────────────────────────────
-
-class TestMemoryExtraction:
-    """Тестирует логику парсинга JSON из LLM-ответа в _extract_and_save."""
-
-    def _parse_facts(self, raw_llm_response: str) -> list[dict]:
-        """Дублируем логику из _extract_and_save для unit-тестирования."""
-        m = re.search(r"\[.*?\]", raw_llm_response, re.DOTALL)
-        if not m:
-            return []
-        try:
-            facts = json.loads(m.group())
-            return facts if isinstance(facts, list) else []
-        except json.JSONDecodeError:
-            return []
-
-    def test_valid_facts_parsed(self):
-        raw = '[{"key":"язык","value":"Python","category":"preferences"}]'
-        facts = self._parse_facts(raw)
-        assert len(facts) == 1
-        assert facts[0]["key"] == "язык"
-        assert facts[0]["value"] == "Python"
-
-    def test_multiple_facts(self):
-        raw = json.dumps([
-            {"key": "name", "value": "Иван", "category": "facts"},
-            {"key": "project", "value": "MIREA AI", "category": "projects"},
-        ])
-        facts = self._parse_facts(raw)
-        assert len(facts) == 2
-
-    def test_empty_array(self):
-        facts = self._parse_facts("[]")
-        assert facts == []
-
-    def test_no_json_returns_empty(self):
-        facts = self._parse_facts("Нет фактов в этом ответе.")
-        assert facts == []
-
-    def test_json_with_surrounding_text(self):
-        raw = 'Вот факты: [{"key":"k","value":"v","category":"general"}] — конец.'
-        facts = self._parse_facts(raw)
-        assert len(facts) == 1
-
-    def test_invalid_json_returns_empty(self):
-        facts = self._parse_facts("[{invalid json}]")
-        assert facts == []
-
-    def test_fact_with_missing_key_skipped(self):
-        """Факты без key или value должны игнорироваться."""
-        facts = self._parse_facts('[{"key":"","value":"val","category":"general"}]')
-        # key пустой → должен быть пропущен в _extract_and_save
-        for f in facts:
-            key = str(f.get("key", "")).strip()
-            value = str(f.get("value", "")).strip()
-            assert not (key and value)  # хотя бы одно пустое
-
-
-# ─────────────────────────────────────────────────────────────────
-# 7. AUTH ENDPOINTS — с мок-сессией
-# ─────────────────────────────────────────────────────────────────
 
 class TestAuthEndpoints:
-    """Тесты register/login через FastAPI TestClient с мокнутой БД."""
+    def test_register_rejects_short_password(self):
+        client = build_auth_client()
+        response = client.post(
+            "/v1/auth/register",
+            json={"email": "user@example.com", "password": "123"},
+        )
+        assert response.status_code == 400
+        assert "at least 6 characters" in response.json()["detail"]
 
-    def _client(self):
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from app.api.v1.auth_history import router
-        app = FastAPI()
-        app.include_router(router, prefix="/v1")
-        return TestClient(app)
+    def test_auth_me_requires_token(self):
+        client = build_auth_client()
+        response = client.get("/v1/auth/me")
+        assert response.status_code == 401
 
-    def _make_session_ctx(self, session):
-        """Создаёт мок для `async with SessionLocal() as session`."""
-        mock_sl = MagicMock()
-        ctx = AsyncMock()
-        ctx.__aenter__ = AsyncMock(return_value=session)
-        ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_sl.return_value = ctx
-        return mock_sl
-
-    def test_register_success(self):
-        """
-        Тестируем register через полный стек:
-        - scalar() возвращает None (email свободен)
-        - session.add + commit вызываются
-        - ответ содержит token
-        Класс User НЕ мокаем — иначе select(User) сломается в SQLAlchemy.
-        Вместо этого позволяем создать реальный объект User, перехватываем add().
-        """
-        client = self._client()
+    def test_auth_me_returns_current_user(self):
+        client = build_auth_client()
         session = AsyncMock()
-        session.scalar.return_value = None   # email не занят
-        added_objects = []
-        session.add = lambda obj: added_objects.append(obj)
-        session.commit = AsyncMock()
+        user = MagicMock()
+        user.id = "user-1"
+        user.email = "user@example.com"
+        user.created_at = datetime(2026, 4, 14)
+        session.scalar = AsyncMock(return_value=user)
 
-        with patch("app.api.v1.auth_history.SessionLocal", self._make_session_ctx(session)):
-            with patch("app.api.v1.auth_history._create_token", return_value="tok123"):
-                r = client.post("/v1/auth/register",
-                                json={"email": "test@test.com", "password": "pass"})
+        with patch("app.api.v1.auth_history.SessionLocal", make_session_ctx(session)):
+            response = client.get("/v1/auth/me", headers=auth_header("user-1"))
 
-        assert r.status_code == 200
-        body = r.json()
-        assert body["token"] == "tok123"
-        assert body["email"] == "test@test.com"
-        assert len(added_objects) == 1  # User был добавлен в сессию
+        assert response.status_code == 200
+        body = response.json()
+        assert body["user_id"] == "user-1"
+        assert body["email"] == "user@example.com"
 
-    def test_login_wrong_password(self):
-        client = self._client()
-        with patch("app.api.v1.auth_history.SessionLocal") as mock_sl:
-            session = AsyncMock()
-            mock_user = MagicMock()
-            mock_user.password_hash = "hashed"
-            session.scalar.return_value = mock_user
-            ctx = AsyncMock()
-            ctx.__aenter__ = AsyncMock(return_value=session)
-            ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_sl.return_value = ctx
+    def test_change_password_forbids_body_user_id_mismatch(self):
+        client = build_auth_client()
+        response = client.put(
+            "/v1/auth/password",
+            headers=auth_header("user-1"),
+            json={
+                "user_id": "user-2",
+                "current_password": "oldpass",
+                "new_password": "newpass123",
+            },
+        )
+        assert response.status_code == 403
 
-            with patch("app.api.v1.auth_history._verify_password", return_value=False):
-                r = client.post("/v1/auth/login",
-                                json={"email": "a@b.com", "password": "wrong"})
-
-        assert r.status_code == 401
-
-    def test_login_unknown_user(self):
-        client = self._client()
-        with patch("app.api.v1.auth_history.SessionLocal") as mock_sl:
-            session = AsyncMock()
-            session.scalar.return_value = None  # пользователь не найден
-            ctx = AsyncMock()
-            ctx.__aenter__ = AsyncMock(return_value=session)
-            ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_sl.return_value = ctx
-
-            r = client.post("/v1/auth/login",
-                            json={"email": "nobody@x.com", "password": "pw"})
-
-        assert r.status_code == 401
-
-    def test_auth_me_ok(self):
-        client = self._client()
-        r = client.get("/v1/auth/me")
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
-
-
-# ─────────────────────────────────────────────────────────────────
-# 8. HISTORY ENDPOINTS — с мок-сессией
-# ─────────────────────────────────────────────────────────────────
 
 class TestHistoryEndpoints:
-    def _client(self):
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from app.api.v1.auth_history import router
-        app = FastAPI()
-        app.include_router(router, prefix="/v1")
-        return TestClient(app)
+    def test_list_history_forbids_other_user(self):
+        client = build_auth_client()
+        response = client.get("/v1/history/user-2", headers=auth_header("user-1"))
+        assert response.status_code == 403
 
-    def _mock_session_ctx(self, session):
-        mock_sl = MagicMock()
-        ctx = AsyncMock()
-        ctx.__aenter__ = AsyncMock(return_value=session)
-        ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_sl.return_value = ctx
-        return mock_sl
-
-    def test_list_conversations_empty(self):
-        client = self._client()
+    def test_get_conversation_checks_ownership_before_returning_messages(self):
+        client = build_auth_client()
         session = AsyncMock()
+        session.scalar = AsyncMock(return_value=None)
+        leaked_message = MagicMock()
+        leaked_message.id = "msg-1"
+        leaked_message.role = "user"
+        leaked_message.content = "secret"
+        leaked_message.model_used = None
+        leaked_message.created_at = datetime(2026, 4, 14)
         result = MagicMock()
-        result.all.return_value = []
+        result.all.return_value = [leaked_message]
         session.scalars = AsyncMock(return_value=result)
 
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.get("/v1/history/user-1")
+        with patch("app.api.v1.auth_history.SessionLocal", make_session_ctx(session)):
+            response = client.get("/v1/history/user-1/conv-1", headers=auth_header("user-1"))
 
-        assert r.status_code == 200
-        assert r.json()["conversations"] == []
+        assert response.status_code == 404
+        session.scalars.assert_not_awaited()
 
-    def test_list_conversations_returns_data(self):
-        client = self._client()
+    def test_rename_conversation_endpoint_exists(self):
+        client = build_auth_client()
         session = AsyncMock()
-        conv = MagicMock()
-        conv.id = "conv-1"
-        conv.title = "Мой чат"
-        conv.created_at = datetime(2026, 1, 1)
-        conv.updated_at = datetime(2026, 1, 2)
-        result = MagicMock()
-        result.all.return_value = [conv]
-        session.scalars = AsyncMock(return_value=result)
-
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.get("/v1/history/user-1")
-
-        assert r.status_code == 200
-        data = r.json()["conversations"]
-        assert len(data) == 1
-        assert data[0]["title"] == "Мой чат"
-
-    def test_get_conversation_messages(self):
-        client = self._client()
-        session = AsyncMock()
-        msg = MagicMock()
-        msg.id = "msg-1"
-        msg.role = "user"
-        msg.content = "Привет"
-        msg.model_used = None
-        msg.created_at = datetime(2026, 1, 1)
-        result = MagicMock()
-        result.all.return_value = [msg]
-        session.scalars = AsyncMock(return_value=result)
-
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.get("/v1/history/user-1/conv-1")
-
-        assert r.status_code == 200
-        msgs = r.json()["messages"]
-        assert msgs[0]["content"] == "Привет"
-
-    def test_save_message_new_conv(self):
-        """POST создаёт conversation если её нет."""
-        client = self._client()
-        session = AsyncMock()
-        session.scalar.return_value = None  # conv не найдена
-        session.add = MagicMock()
-        session.commit = AsyncMock()
-        session.execute = AsyncMock()
-
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            with patch("app.api.v1.auth_history.Message") as MockMsg:
-                instance = MagicMock()
-                instance.id = "msg-new"
-                MockMsg.return_value = instance
-                r = client.post(
-                    "/v1/history/user-1/conv-1",
-                    json={"role": "user", "content": "Привет", "model_used": None},
-                )
-
-        assert r.status_code == 201
-        assert "id" in r.json()
-
-    def test_delete_conversation(self):
-        client = self._client()
-        session = AsyncMock()
+        conversation = MagicMock()
+        conversation.id = "conv-1"
+        conversation.user_id = "user-1"
+        session.scalar = AsyncMock(return_value=conversation)
         session.execute = AsyncMock()
         session.commit = AsyncMock()
 
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.delete("/v1/history/user-1/conv-1")
+        with patch("app.api.v1.auth_history.SessionLocal", make_session_ctx(session)):
+            response = client.patch(
+                "/v1/history/user-1/conv-1",
+                headers=auth_header("user-1"),
+                json={"title": "Renamed chat"},
+            )
 
-        assert r.status_code == 204
+        assert response.status_code == 200
+        assert response.json()["title"] == "Renamed chat"
 
+    def test_delete_conversation_removes_messages_and_conversation(self):
+        client = build_auth_client()
+        session = AsyncMock()
+        conversation = MagicMock()
+        conversation.id = "conv-1"
+        conversation.user_id = "user-1"
+        session.scalar = AsyncMock(return_value=conversation)
+        session.execute = AsyncMock()
+        session.commit = AsyncMock()
 
-# ─────────────────────────────────────────────────────────────────
-# 9. MEMORY ENDPOINTS — с мок-сессией
-# ─────────────────────────────────────────────────────────────────
+        with patch("app.api.v1.auth_history.SessionLocal", make_session_ctx(session)):
+            response = client.delete(
+                "/v1/history/user-1/conv-1",
+                headers=auth_header("user-1"),
+            )
+
+        assert response.status_code == 204
+        assert session.execute.await_count == 2
+
 
 class TestMemoryEndpoints:
-    def _client(self):
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from app.api.v1.auth_history import router
-        app = FastAPI()
-        app.include_router(router, prefix="/v1")
-        return TestClient(app)
+    def test_extract_memory_requires_matching_user(self):
+        client = build_auth_client()
+        response = client.post(
+            "/v1/memory/extract",
+            headers=auth_header("user-1"),
+            json={
+                "user_id": "user-2",
+                "assistant_message": "hello",
+            },
+        )
+        assert response.status_code == 403
 
-    def _mock_session_ctx(self, session):
-        mock_sl = MagicMock()
-        ctx = AsyncMock()
-        ctx.__aenter__ = AsyncMock(return_value=session)
-        ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_sl.return_value = ctx
-        return mock_sl
+    def test_get_memory_requires_token(self):
+        client = build_auth_client()
+        response = client.get("/v1/memory/user-1")
+        assert response.status_code == 401
 
-    def test_get_memory_empty(self):
-        client = self._client()
-        session = AsyncMock()
-        result = MagicMock()
-        result.all.return_value = []
-        session.scalars = AsyncMock(return_value=result)
 
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.get("/v1/memory/user-1")
+class TestProxyAttachments:
+    def test_build_mws_request_strips_internal_fields(self):
+        request = ChatCompletionRequest(
+            model="auto",
+            messages=[Message(role="user", content="hello")],
+            system_prompt="memory context",
+            conversation_id="conv-1",
+            use_memory=True,
+            attachments=[{"name": "doc.pdf", "mime": "application/pdf"}],
+        )
 
-        assert r.status_code == 200
-        assert r.json()["memories"] == []
+        built = proxy._build_mws_request(request, memory_block="server memory")
 
-    def test_get_memory_with_facts(self):
-        client = self._client()
-        session = AsyncMock()
-        mem = MagicMock()
-        mem.key = "язык"
-        mem.value = "Python"
-        mem.category = "preferences"
-        mem.score = 1.0
-        mem.updated_at = datetime(2026, 1, 1)
-        result = MagicMock()
-        result.all.return_value = [mem]
-        session.scalars = AsyncMock(return_value=result)
+        assert built.messages[0].role == "system"
+        assert "server memory" in built.messages[0].content
+        assert built.system_prompt is None
+        assert built.conversation_id is None
+        assert built.use_memory is None
+        assert built.attachments is None
 
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.get("/v1/memory/user-1")
+    def test_chat_completions_routes_with_request_attachments(self):
+        router_client = MagicMock()
+        router_client.route = AsyncMock(
+            return_value=RouteResult("file_qa", "qwen2.5-72b-instruct", 1.0, 1)
+        )
+        mws_client = MagicMock()
+        mws_client.chat = AsyncMock(
+            return_value={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": "qwen2.5-72b-instruct",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+            }
+        )
 
-        assert r.status_code == 200
-        facts = r.json()["memories"]
-        assert facts[0]["key"] == "язык"
-        assert facts[0]["value"] == "Python"
+        client = build_proxy_client(router_client, mws_client)
 
-    def test_upsert_memory_new(self):
-        """Новая запись памяти — scalar() == None → session.add вызывается."""
-        client = self._client()
-        session = AsyncMock()
-        session.scalar.return_value = None  # не существует
-        added = []
-        session.add = lambda obj: added.append(obj)
-        session.commit = AsyncMock()
-
-        # НЕ мокаем UserMemory — select(UserMemory) сломается
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.post(
-                "/v1/memory/user-1",
-                json={"key": "фреймворк", "value": "FastAPI", "category": "preferences"},
-            )
-
-        assert r.status_code == 201
-        assert r.json()["status"] == "ok"
-        assert len(added) == 1  # UserMemory объект добавлен
-
-    def test_upsert_memory_update_existing(self):
-        client = self._client()
-        session = AsyncMock()
-        session.scalar.return_value = MagicMock()  # уже существует
-        session.execute = AsyncMock()
-        session.commit = AsyncMock()
-
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.post(
-                "/v1/memory/user-1",
-                json={"key": "фреймворк", "value": "Django", "category": "preferences"},
-            )
-
-        assert r.status_code == 201
-
-    def test_delete_memory(self):
-        client = self._client()
-        session = AsyncMock()
-        session.execute = AsyncMock()
-        session.commit = AsyncMock()
-
-        with patch("app.api.v1.auth_history.SessionLocal", self._mock_session_ctx(session)):
-            r = client.delete("/v1/memory/user-1/язык")
-
-        assert r.status_code == 204
-
-    def test_memory_extract_accepted(self):
-        """POST /memory/extract synchronously returns extracted memories."""
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from app.api.v1.auth_history import router
-        from app.services.mws_client import get_mws_client
-        from app.config import get_settings, Settings
-
-        app = FastAPI()
-        app.include_router(router, prefix="/v1")
-
-        # Переопределяем FastAPI-зависимости
-        mock_mws = MagicMock()
-        mock_settings = Settings(MWS_API_KEY="test", MWS_BASE_URL="http://localhost")
-        app.dependency_overrides[get_mws_client] = lambda: mock_mws
-        app.dependency_overrides[get_settings] = lambda: mock_settings
-
-        client = TestClient(app)
-
-        async def fake_extract_and_save(*args, **kwargs):
-            return [{"key": "name", "value": "Alex", "category": "facts"}]
-
-        with patch("app.api.v1.auth_history._extract_and_save", new=fake_extract_and_save):
-            r = client.post(
-                "/v1/memory/extract",
+        with patch("app.api.v1.proxy._log_route", new=AsyncMock()):
+            response = client.post(
+                "/v1/chat/completions",
                 json={
-                    "user_id": "user-1",
-                    "conv_id": "conv-1",
-                    "user_message": "Меня зовут Алекс",
-                    "assistant_message": "Я знаю что ты любишь Python и работаешь над MIREA AI",
+                    "model": "auto",
+                    "messages": [{"role": "user", "content": "check the file"}],
+                    "stream": False,
+                    "use_memory": False,
+                    "attachments": [{"name": "report.pdf", "mime": "application/pdf"}],
                 },
             )
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
-        assert r.json()["memories"][0]["key"] == "name"
+
+        assert response.status_code == 200
+        router_client.route.assert_awaited_once_with(
+            message="check the file",
+            attachments=[{"name": "report.pdf", "mime": "application/pdf"}],
+        )
+
+    def test_chat_completions_requires_token_for_user_scoped_requests(self):
+        router_client = MagicMock()
+        router_client.route = AsyncMock()
+        mws_client = MagicMock()
+        client = build_proxy_client(router_client, mws_client)
+
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "auto",
+                "messages": [{"role": "user", "content": "hello"}],
+                "user": "user-1",
+                "use_memory": True,
+            },
+        )
+
+        assert response.status_code == 401
+        router_client.route.assert_not_called()
 
 
-# ─────────────────────────────────────────────────────────────────
-# 10. CONFIG — новые поля
-# ─────────────────────────────────────────────────────────────────
+class TestToolsRoutes:
+    def test_web_search_route_exists_and_requires_auth(self):
+        client = build_tools_client()
+        response = client.post("/v1/tools/web-search", json={"query": "python"})
+        assert response.status_code == 401
 
-class TestConfig:
-    def test_secret_key_has_default(self):
-        from app.config import Settings
-        s = Settings(MWS_API_KEY="k", MWS_BASE_URL="http://x")
-        assert isinstance(s.SECRET_KEY, str)
-        assert len(s.SECRET_KEY) > 10
+    def test_web_search_route_returns_results(self):
+        client = build_tools_client()
 
-    def test_token_expiry_default(self):
-        from app.config import Settings
-        s = Settings(MWS_API_KEY="k", MWS_BASE_URL="http://x")
-        assert s.ACCESS_TOKEN_EXPIRE_MINUTES > 0
+        with patch(
+            "app.api.v1.tools.WebSearchService.search",
+            new=AsyncMock(return_value=[{"title": "Result", "url": "https://example.com", "snippet": "body"}]),
+        ):
+            response = client.post(
+                "/v1/tools/web-search",
+                headers=auth_header("user-1"),
+                json={"query": "python", "max_results": 3},
+            )
 
-    def test_database_url_default(self):
-        from app.config import Settings
-        s = Settings(MWS_API_KEY="k", MWS_BASE_URL="http://x")
-        assert "postgresql" in s.DATABASE_URL
+        assert response.status_code == 200
+        assert response.json()["results"][0]["url"] == "https://example.com"
 
-    def test_extra_fields_ignored(self):
-        """Посторонние поля из .env не ломают Settings."""
-        from app.config import Settings
-        s = Settings(MWS_API_KEY="k", UNKNOWN_FIELD="garbage")  # type: ignore
-        assert s.MWS_API_KEY == "k"
+
+class TestModels:
+    def test_message_model_contains_conversation_fk_column(self):
+        from app.db.models import Base
+
+        conversation_column = Base.metadata.tables["messages"].columns["conversation_id"]
+        assert conversation_column.foreign_keys

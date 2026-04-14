@@ -1,15 +1,40 @@
-// ══ API — const API, authHeaders(), apiAuthRegister(), apiAuthLogin(),
-//          loadMemory(), queueMemorySync(), waitForMemorySync(), fireSaveMessage() ══
+// API helpers: auth, memory sync, lightweight history persistence.
 
-const API = 'http://localhost:8000/v1';
+const API = (() => {
+  const override = window.MTS_API_BASE || localStorage.getItem('mts-api-base');
+  if (override) return override.replace(/\/$/, '');
 
-// Auth state
+  const protocol = window.location?.protocol || '';
+  const host = window.location?.hostname || '';
+  const port = window.location?.port || '';
+
+  // If the frontend is served by a random static server on localhost, prefer the backend port directly.
+  if (
+    (host === '127.0.0.1' || host === 'localhost')
+    && port
+    && !['3000', '8000', '8010'].includes(port)
+  ) {
+    return 'http://localhost:8000/v1';
+  }
+
+  if (protocol === 'http:' || protocol === 'https:') {
+    return `${window.location.origin}/v1`;
+  }
+
+  return 'http://localhost:8000/v1';
+})();
+
 let authToken = localStorage.getItem('mts-token') || null;
-let userMemory = [];   // [{key, value, category, score, updated_at}]
+let userMemory = [];
 let pendingMemorySync = null;
 
 function authHeaders() {
-  return authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
+  return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+}
+
+async function readApiError(response, fallbackMessage) {
+  const data = await response.json().catch(() => ({}));
+  return data?.detail || data?.error?.message || data?.message || fallbackMessage;
 }
 
 function sortMemoryFacts(memories) {
@@ -24,8 +49,8 @@ function sortMemoryFacts(memories) {
 
 function upsertMemoryFactLocally(fact) {
   if (!fact?.key || !fact?.value) return;
-  const idx = userMemory.findIndex(item => item.key === fact.key);
-  if (idx >= 0) userMemory[idx] = { ...userMemory[idx], ...fact };
+  const index = userMemory.findIndex(item => item.key === fact.key);
+  if (index >= 0) userMemory[index] = { ...userMemory[index], ...fact };
   else userMemory.push(fact);
   userMemory = sortMemoryFacts(userMemory);
 }
@@ -36,38 +61,48 @@ function mergeMemoryFacts(facts) {
 }
 
 async function apiAuthRegister(email, password) {
-  const r = await fetch(`${API}/auth/register`, {
+  const response = await fetch(`${API}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  if (!r.ok) {
-    const d = await r.json().catch(() => ({}));
-    throw new Error(d.detail || 'Ошибка регистрации');
+  if (!response.ok) {
+    throw new Error(await readApiError(response, 'Registration failed'));
   }
-  return r.json();
+  return response.json();
 }
 
 async function apiAuthLogin(email, password) {
-  const r = await fetch(`${API}/auth/login`, {
+  const response = await fetch(`${API}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  if (!r.ok) {
-    const d = await r.json().catch(() => ({}));
-    throw new Error(d.detail || 'Неверный email или пароль');
+  if (!response.ok) {
+    throw new Error(await readApiError(response, 'Login failed'));
   }
-  return r.json();
+  return response.json();
+}
+
+async function apiAuthMe() {
+  const response = await fetch(`${API}/auth/me`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response, 'Session is not valid'));
+  }
+  return response.json();
 }
 
 async function loadMemory() {
   if (!currentUserId) return;
   try {
-    const r = await fetch(`${API}/memory/${currentUserId}`, { headers: authHeaders() });
-    if (r.ok) {
-      const d = await r.json();
-      userMemory = sortMemoryFacts(d.memories || []);
+    const response = await fetch(`${API}/memory/${currentUserId}`, {
+      headers: authHeaders(),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      userMemory = sortMemoryFacts(data.memories || []);
     }
   } catch {}
 }
@@ -76,8 +111,8 @@ function buildMemoryBlock() {
   if (!userMemory.length) return null;
   const top = userMemory.slice(0, 8);
   return [
-    'Контекст о пользователе. Используй только релевантные факты.',
-    ...top.map(m => `- [${m.category || 'general'}] ${m.key}: ${m.value}`),
+    'User memory context. Use only the facts that are relevant to the current answer.',
+    ...top.map(item => `- [${item.category || 'general'}] ${item.key}: ${item.value}`),
   ].join('\n');
 }
 
@@ -85,8 +120,9 @@ async function extractMemory(userText, assistantText) {
   const activeUserId = currentUserId;
   const combined = `${userText || ''}\n${assistantText || ''}`.trim();
   if (!activeUserId || !combined) return [];
+
   try {
-    const r = await fetch(`${API}/memory/extract`, {
+    const response = await fetch(`${API}/memory/extract`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
@@ -96,9 +132,10 @@ async function extractMemory(userText, assistantText) {
         assistant_message: assistantText,
       }),
     });
-    if (!r.ok) return [];
-    const d = await r.json().catch(() => ({}));
-    const facts = Array.isArray(d.memories) ? d.memories : [];
+    if (!response.ok) return [];
+
+    const data = await response.json().catch(() => ({}));
+    const facts = Array.isArray(data.memories) ? data.memories : [];
     if (currentUserId === activeUserId) mergeMemoryFacts(facts);
     return facts;
   } catch {
@@ -124,7 +161,7 @@ async function waitForMemorySync() {
 }
 
 function fireSaveMessage(role, content, modelUsed) {
-  if (!currentUserId || !currentConvId) return;
+  if (!currentUserId || !currentConvId || !authToken) return;
   fetch(`${API}/history/${currentUserId}/${currentConvId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },

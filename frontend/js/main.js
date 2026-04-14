@@ -10,7 +10,7 @@ let selectedModel     = 'auto';   // actual API id
 let selectedModelName = 'Авто';   // display name
 
 // ── Init ──────────────────────────────────────
-(function init(){
+(async function init(){
   const t=localStorage.getItem('mts-theme');
   if(t==='light'){ document.documentElement.setAttribute('data-theme','light'); document.getElementById('thTgl').classList.add('on'); }
   const l=localStorage.getItem('mts-lang')||'ru';
@@ -28,16 +28,28 @@ let selectedModelName = 'Авто';   // display name
   if(savedToken && savedUserId){
     authToken = savedToken;
     currentUserId = savedUserId;
-    if(savedEmail) document.getElementById('profInpEmail').value = savedEmail;
-    const savedName=localStorage.getItem('mts-display-name');
-    const displayName=savedName||(savedEmail?savedEmail.split('@')[0]:'MTS User');
-    document.getElementById('profInpName').value=displayName;
-    document.getElementById('sbUserName').textContent=displayName;
-    document.getElementById('sbAvatar').textContent=getInitials(displayName);
-    const org=localStorage.getItem('mts-org')||'';
-    if(org) document.getElementById('profInpOrg').value=org;
-    document.getElementById('authScreen').style.display='none';
-    initSplash();
+    try {
+      const me = await apiAuthMe();
+      currentUserId = me.user_id || savedUserId;
+      if(savedEmail || me.email) document.getElementById('profInpEmail').value = me.email || savedEmail;
+      const savedName=localStorage.getItem('mts-display-name');
+      const displayName=savedName||((me.email||savedEmail)?(me.email||savedEmail).split('@')[0]:'MTS User');
+      document.getElementById('profInpName').value=displayName;
+      document.getElementById('sbUserName').textContent=displayName;
+      document.getElementById('sbAvatar').textContent=getInitials(displayName);
+      const org=localStorage.getItem('mts-org')||'';
+      if(org) document.getElementById('profInpOrg').value=org;
+      document.getElementById('authScreen').style.display='none';
+      initSplash();
+    } catch {
+      authToken = null;
+      currentUserId = null;
+      localStorage.removeItem('mts-token');
+      localStorage.removeItem('mts-user-id');
+      localStorage.removeItem('mts-user-email');
+      setTimeout(()=>document.getElementById('authEmail')?.focus(),400);
+      toast('Session expired, please sign in again','inf',3000);
+    }
   } else {
     setTimeout(()=>document.getElementById('authEmail')?.focus(),400);
   }

@@ -2,7 +2,7 @@ import requests
 import json
 
 API_URL = "https://api.gpt.mws.ru/v1"
-API_KEY = "sk-ewgiaPC3A6pPDYHwR8siVA"
+API_KEY = "sk-II90RLcfQeowlrusifVDbA"
 
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
@@ -96,7 +96,7 @@ def test_image_generation(model):
         "size": "1024x1024"
     }
     try:
-        r = requests.post(url, headers=HEADERS, json=data, timeout=90)
+        r = requests.post(url, headers=HEADERS, json=data, timeout=600)
         print(f"  📡 Статус: {r.status_code}")
         print("  📝 Ответ:")
         print("  " + "-" * 50)

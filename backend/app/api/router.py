@@ -1,5 +1,6 @@
 from fastapi import APIRouter
-from app.api.v1 import proxy, voice, images, research, health, auth_history, parse
+
+from app.api.v1 import auth_history, health, images, parse, proxy, research, tools, voice
 
 api_router = APIRouter()
 
@@ -23,3 +24,6 @@ api_router.include_router(health.router, prefix="/v1", tags=["health"])
 
 # Document parser
 api_router.include_router(parse.router, prefix="/v1", tags=["parse"])
+
+# Utility tools
+api_router.include_router(tools.router, prefix="/v1", tags=["tools"])

@@ -4,8 +4,10 @@ import asyncio
 import json
 
 import pytest
+from fastapi.security import HTTPAuthorizationCredentials
 
 from app.api.v1 import proxy as proxy_module
+from app.api.v1.auth_history import _create_token
 from app.api.v1.research import _run_pipeline, run_research
 from app.config import Settings
 from app.models.mws import ChatCompletionRequest, Message
@@ -160,6 +162,11 @@ def build_fake_services():
         }
     )
     return search, parser
+
+
+def make_credentials(settings: Settings, user_id: str) -> HTTPAuthorizationCredentials:
+    token = _create_token(user_id, f"{user_id}@example.com", settings)
+    return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
 @pytest.mark.asyncio
@@ -353,6 +360,7 @@ async def test_proxy_auto_route_returns_research_completion_shape(monkeypatch: p
         mws=fake_mws,
         router_client=fake_router,
         settings=settings,
+        credentials=make_credentials(settings, "user-1"),
     )
     payload = json.loads(response.body.decode("utf-8"))
 
@@ -409,6 +417,7 @@ async def test_proxy_auto_route_streams_research_progress_for_stream_requests(
         mws=fake_mws,
         router_client=fake_router,
         settings=settings,
+        credentials=make_credentials(settings, "user-3"),
     )
 
     chunks: list[str] = []
@@ -459,6 +468,7 @@ async def test_proxy_keeps_manual_model_on_normal_chat_path(monkeypatch: pytest.
         mws=fake_mws,
         router_client=fake_router,
         settings=settings,
+        credentials=make_credentials(settings, "user-2"),
     )
     payload = json.loads(response.body.decode("utf-8"))
 

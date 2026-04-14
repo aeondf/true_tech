@@ -1,9 +1,10 @@
 from typing import Any
+
 from pydantic import BaseModel
 
 
 class Message(BaseModel):
-    role: str   # system | user | assistant
+    role: str
     content: str
 
 
@@ -17,10 +18,12 @@ class ChatCompletionRequest(BaseModel):
     frequency_penalty: float | None = None
     stream: bool = False
     user: str | None = None
-    # Extended fields — not forwarded to MWS, consumed by proxy
-    system_prompt: str | None = None       # memory block injected as system message
-    conversation_id: str | None = None     # for history persistence
-    use_memory: bool | None = True         # whether proxy should inject long-term memory
+
+    # Internal proxy-only fields. They must be stripped before forwarding to MWS.
+    system_prompt: str | None = None
+    conversation_id: str | None = None
+    use_memory: bool | None = True
+    attachments: list[dict[str, Any]] | None = None
 
 
 class CompletionRequest(BaseModel):

@@ -16,10 +16,12 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 
+from app.api.v1.auth_history import _decode_token
 from app.api.v1.research import _run_pipeline, run_research
 from app.config import Settings, get_settings
 from app.db.database import SessionLocal
@@ -31,6 +33,7 @@ from app.services.router_client import RouterClient, RouteResult, get_router_cli
 _log = logging.getLogger(__name__)
 
 router = APIRouter()
+security = HTTPBearer(auto_error=False)
 
 
 def _last_user_text(request: ChatCompletionRequest) -> str:
@@ -139,6 +142,7 @@ def _build_mws_request(request: ChatCompletionRequest, memory_block: str | None 
         "system_prompt": None,
         "conversation_id": None,
         "use_memory": None,
+        "attachments": None,
     })
 
 
@@ -237,9 +241,26 @@ async def chat_completions(
     mws: MWSClient = Depends(get_mws_client),
     router_client: RouterClient = Depends(get_router_client),
     settings: Settings = Depends(get_settings),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    authenticated_user_id = "anonymous"
+    stateful_request = request.conversation_id or request.user not in (None, "", "anonymous")
+    if isinstance(credentials, HTTPAuthorizationCredentials) and credentials.scheme.lower() == "bearer":
+        authenticated_user_id = _decode_token(credentials.credentials, settings).id
+    elif stateful_request:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    if authenticated_user_id == "anonymous":
+        request = request.model_copy(update={
+            "user": "anonymous",
+            "use_memory": False,
+            "conversation_id": None,
+        })
+    else:
+        request = request.model_copy(update={"user": authenticated_user_id})
+
     t0 = time.monotonic()
-    attachments: list[dict] = []
+    attachments = request.attachments or []
     message_text = _last_user_text(request)
     route = await router_client.route(message=message_text, attachments=attachments)
     latency_ms = int((time.monotonic() - t0) * 1000)
